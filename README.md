@@ -8,6 +8,18 @@ The service accepts uploads asynchronously: submit a file, receive a durable job
 status, and download the result. Docker Compose runs the API, an independent inference worker,
 PostgreSQL, and Redis on your machine. No hosted service or subscription is required.
 
+![Completed Hebrew transcription with right-to-left text, timestamped segments, and copy and download controls](docs/images/transcription-result.png)
+
+Example result from a nine-second Hebrew recording using the default small model.
+
+## Summary
+
+Upload an audio or video file through the browser or API, follow its durable transcription job,
+and copy or download the timestamped result. The service runs locally with Docker Compose and
+uses open-source Whisper models from Hugging Face. It includes bounded uploads, retries,
+restart recovery, isolated inference, and explicit retention policies. Setup instructions,
+tests, architecture notes, and documented trade-offs are included for evaluation.
+
 ## Documentation
 
 | Document | What it covers |
