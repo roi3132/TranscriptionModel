@@ -9,6 +9,7 @@ from uuid import uuid4
 import anyio
 import structlog
 from fastapi import FastAPI, Request, Response
+from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import RequestResponseEndpoint
 
 from transcription_service import __version__
@@ -16,6 +17,8 @@ from transcription_service.adapters.faster_whisper import FasterWhisperTranscrib
 from transcription_service.adapters.media import PyAvMediaInspector
 from transcription_service.api.health import router as health_router
 from transcription_service.api.transcriptions import router as transcription_router
+from transcription_service.api.ui import STATIC_DIRECTORY
+from transcription_service.api.ui import router as ui_router
 from transcription_service.core.config import Settings, get_settings
 from transcription_service.core.errors import register_exception_handlers
 from transcription_service.core.logging import configure_logging
@@ -98,6 +101,12 @@ def create_app(
     register_exception_handlers(application)
     application.include_router(health_router)
     application.include_router(transcription_router, prefix=resolved_settings.api_prefix)
+    application.include_router(ui_router)
+    application.mount(
+        "/assets",
+        StaticFiles(directory=STATIC_DIRECTORY / "assets"),
+        name="assets",
+    )
 
     @application.middleware("http")
     async def request_context(request: Request, call_next: RequestResponseEndpoint) -> Response:

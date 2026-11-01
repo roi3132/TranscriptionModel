@@ -3,8 +3,8 @@
 A production-minded FastAPI service that accepts an audio or video file and returns a timestamped
 transcription produced by an open multilingual Whisper model from Hugging Face.
 
-The service currently supports the complete audio and video-container workflow. The browser UI,
-Docker packaging, and CI are the next planned phases. See
+The service currently supports the complete audio and video-container workflow, including a browser
+upload interface. Docker packaging and CI are the next planned phases. See
 [`docs/architecture-plan.html`](docs/architecture-plan.html) for the ordered implementation plan.
 
 ## Current capabilities
@@ -77,6 +77,11 @@ Run the API:
 uv run uvicorn transcription_service.main:app --reload
 ```
 
+Open <http://localhost:8000/> for the browser interface. Choose an audio or video file, select
+Auto-detect, Hebrew, or English, and choose Speech or Music mode. The page shows progress and
+timestamped transcript segments, with copy and `.txt` download actions. You can also use the API
+directly at <http://localhost:8000/docs> or with the `curl` example below.
+
 The first startup downloads approximately 500 MB of model files into the Hugging Face user cache
 (normally `~/.cache/huggingface/hub`), which is outside this repository. Later runs reuse the cached
 model. The local `.venv/`, `.uv-cache/`, `.cache/`, `models/`, `uploads/`, and `.env` paths are also
@@ -88,6 +93,7 @@ with `!!`; they must not appear as staged or tracked files.
 
 Available endpoints:
 
+- Browser interface: <http://localhost:8000/>
 - API documentation: <http://localhost:8000/docs>
 - Liveness: <http://localhost:8000/health/live>
 - Readiness: <http://localhost:8000/health/ready>
@@ -289,10 +295,9 @@ voice activity detection for lower latency on ordinary spoken recordings. `music
 Whisper's no-speech segment skipping, processing the complete audio track so music-heavy vocals are
 not discarded as non-speech.
 
-The service does not retry an empty speech result automatically. Such a retry would double the
-worst-case work and could make Whisper hallucinate text for genuinely silent media. The explicit
-mode keeps cost and behavior predictable, and the future browser UI will describe the trade-off in
-user-facing language.
+The browser exposes these two modes with a short explanation. The service does not retry an empty
+speech result automatically. Such a retry would double the worst-case work and could make Whisper
+hallucinate text for genuinely silent media. The explicit mode keeps cost and behavior predictable.
 
 ### Fast tests plus an explicit real-model smoke test
 
@@ -330,12 +335,22 @@ Expected status codes include:
 Internal exception text, stack traces, and local paths are logged server-side and are not returned
 to clients. Every response includes `X-Request-ID` for correlation.
 
+### Same-origin, buildless browser interface
+
+The upload experience is a single HTML page with local CSS and JavaScript served by FastAPI. It
+submits to the existing API, so local development and deployment need only one process and there is
+no separate frontend server, framework, bundler, or extra runtime dependency. Static assets are
+packaged with the Python wheel. The page does not load fonts, scripts, or styles from third-party
+CDNs, and the service still discards uploaded media and results after responding.
+
+This intentionally small interface is appropriate for the assignment's one-request workflow. A
+larger product with navigation, authentication, durable job history, or multiple frontend teams
+could justify a separately deployed frontend and its added build and deployment pipeline.
+
 ## Current limitations and next steps
 
 - Only the first audio stream in a video container is transcribed; the API does not yet expose audio
   track selection.
-- The browser upload UI is not implemented yet. It will render transcript text with `dir="auto"`
-  for correct Hebrew RTL and English LTR behavior.
 - Docker and GitHub Actions are not implemented yet. Until that phase, the truthful supported run
   path is the native `uv` workflow above.
 - There is no authentication or rate limiting. Do not expose this service directly to an untrusted

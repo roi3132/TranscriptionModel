@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta
+      name="description"
+      content="Transcribe Hebrew, English, and other languages from audio and video files."
+    >
+    <meta name="theme-color" content="#f5f4ef">
+    <title>Transcription Studio</title>
+    <link rel="stylesheet" href="/assets/app.css">
+    <script src="/assets/app.js" defer></script>
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="/" aria-label="Transcription Studio home">
+        <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+        <span>transcript<span class="brand-light">.studio</span></span>
+      </a>
+      <div class="service-status" id="service-status" role="status" aria-live="polite">
+        <span class="status-dot" aria-hidden="true"></span>
+        <span id="service-status-text">Checking model…</span>
+      </div>
+    </header>
+
+    <main class="page-shell">
+      <section class="intro" aria-labelledby="page-title">
+        <p class="eyebrow"><span class="eyebrow-line" aria-hidden="true"></span> Local transcription workspace</p>
+        <h1 id="page-title">Your recordings,<br><span>in clear text.</span></h1>
+        <p class="intro-copy">
+          Turn audio and video into readable, timestamped transcripts. Hebrew, English, and more,
+          processed on this service without saving your media.
+        </p>
+      </section>
+
+      <section class="workspace" aria-label="Transcription workspace">
+        <form id="transcription-form" class="upload-panel">
+          <div class="panel-heading">
+            <div>
+              <p class="step-label">01 <span>·</span> Add your media</p>
+              <h2>Choose a recording</h2>
+            </div>
+            <span class="format-hint">AUDIO + VIDEO</span>
+          </div>
+
+          <label class="dropzone" id="dropzone" for="media-file">
+            <input
+              class="visually-hidden"
+              id="media-file"
+              name="file"
+              type="file"
+              accept="audio/*,video/*,.aac,.flac,.m4a,.mkv,.mov,.mp3,.mp4,.ogg,.opus,.wav,.webm"
+            >
+            <span class="upload-symbol" aria-hidden="true">
+              <span class="upload-arrow">↑</span>
+              <span class="upload-tray"></span>
+            </span>
+            <span class="dropzone-title">Drop a file here, or <span>browse</span></span>
+            <span class="dropzone-meta">WAV, MP3, M4A, FLAC, OGG, MP4, MOV, WEBM, MKV</span>
+          </label>
+
+          <div class="selected-file" id="selected-file" hidden>
+            <span class="file-icon" aria-hidden="true">♫</span>
+            <span class="file-details">
+              <span class="file-name" id="file-name"></span>
+              <span class="file-size" id="file-size"></span>
+            </span>
+            <button class="icon-button" id="remove-file" type="button" aria-label="Remove selected file">
+              <span aria-hidden="true">×</span>
+            </button>
+          </div>
+
+          <div class="options-grid">
+            <div class="field-group">
+              <label class="field-label" for="language">Transcript language</label>
+              <select class="select-control" id="language" name="language">
+                <option value="auto">Auto-detect</option>
+                <option value="he">Hebrew · עברית</option>
+                <option value="en">English</option>
+              </select>
+            </div>
+
+            <fieldset class="field-group mode-fieldset">
+              <legend class="field-label">What’s in the recording?</legend>
+              <div class="mode-options">
+                <label class="mode-option">
+                  <input type="radio" name="audio_mode" value="speech" checked>
+                  <span class="mode-card">
+                    <span class="mode-title">Speech</span>
+                    <span class="mode-description">Optimized for conversation</span>
+                  </span>
+                </label>
+                <label class="mode-option">
+                  <input type="radio" name="audio_mode" value="music">
+                  <span class="mode-card">
+                    <span class="mode-title">Music</span>
+                    <span class="mode-description">For songs or vocals over music</span>
+                  </span>
+                </label>
+              </div>
+            </fieldset>
+          </div>
+
+          <p class="error-message" id="form-error" role="alert" hidden></p>
+          <button class="submit-button" id="submit-button" type="submit" disabled>
+            <span>Transcribe recording</span>
+            <span class="button-arrow" aria-hidden="true">↗</span>
+          </button>
+          <p class="privacy-note">
+            <span class="privacy-lock" aria-hidden="true">◆</span>
+            Your file is processed for this request and not stored.
+          </p>
+        </form>
+
+        <section class="result-panel" id="result-panel" aria-labelledby="result-title" aria-live="polite">
+          <div class="panel-heading result-heading">
+            <div>
+              <p class="step-label">02 <span>·</span> Your transcript</p>
+              <h2 id="result-title" tabindex="-1">Ready when you are</h2>
+            </div>
+            <span class="result-badge" id="result-badge">AWAITING FILE</span>
+          </div>
+
+          <div class="empty-state" id="empty-state">
+            <div class="transcript-lines" aria-hidden="true"><span></span><span></span><span></span></div>
+            <p>Your transcript will appear here, with timestamps for every segment.</p>
+          </div>
+
+          <div class="loading-state" id="loading-state" hidden>
+            <span class="loading-spinner" aria-hidden="true"></span>
+            <div>
+              <p class="loading-title">Listening closely…</p>
+              <p class="loading-copy">Longer recordings can take a little while.</p>
+            </div>
+          </div>
+
+          <div class="transcript-content" id="transcript-content" hidden>
+            <div class="result-actions">
+              <span class="result-meta" id="result-meta"></span>
+              <div class="action-buttons">
+                <button class="text-button" id="copy-button" type="button">Copy text</button>
+                <button class="text-button" id="download-button" type="button">Download .txt</button>
+              </div>
+            </div>
+            <p class="copy-feedback" id="copy-feedback" aria-live="polite"></p>
+            <div class="transcript-text" id="transcript-text" dir="auto"></div>
+            <div class="segments-section" id="segments-section" hidden>
+              <h3>Timestamped segments</h3>
+              <ol class="segment-list" id="segment-list"></ol>
+            </div>
+          </div>
+
+          <div class="no-speech-state" id="no-speech-state" hidden>
+            <span class="no-speech-icon" aria-hidden="true">…</span>
+            <p class="loading-title">No clear speech was detected.</p>
+            <p class="loading-copy">For songs or music-heavy audio, choose Music mode and try again.</p>
+          </div>
+
+          <div class="result-error" id="result-error" role="alert" hidden></div>
+          <p class="powered-by">Powered by an open multilingual Whisper model</p>
+        </section>
+      </section>
+
+      <footer class="page-footer">
+        <span>Made for voices worth understanding.</span>
+        <a href="/docs" target="_blank" rel="noreferrer">API documentation <span aria-hidden="true">↗</span></a>
+      </footer>
+    </main>
+  </body>
+</html>

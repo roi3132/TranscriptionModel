@@ -518,10 +518,10 @@
               <h3>Minimal human-facing upload UI</h3>
               <div class="phase-meta">Estimated 2 hours · Plain HTML, CSS, and JavaScript</div>
               <div class="tasks">
-                <label class="task"><input type="checkbox" data-task="3-1"><span>Serve a single accessible page with file selection, drag/drop, and an Auto / Hebrew / English language selector.</span></label>
-                <label class="task"><input type="checkbox" data-task="3-2"><span>Show upload/transcribing state, a useful error message, complete text, and timestamped segments.</span></label>
-                <label class="task"><input type="checkbox" data-task="3-3"><span>Render transcript content with <code>dir="auto"</code> so Hebrew and English use the correct direction.</span></label>
-                <label class="task"><input type="checkbox" data-task="3-4"><span>Add copy-to-clipboard and download-as-text actions without adding a frontend build tool.</span></label>
+                <label class="task"><input type="checkbox" data-task="3-1" checked><span>Serve a single accessible page with file selection, drag/drop, and an Auto / Hebrew / English language selector.</span></label>
+                <label class="task"><input type="checkbox" data-task="3-2" checked><span>Show upload/transcribing state, a useful error message, complete text, and timestamped segments.</span></label>
+                <label class="task"><input type="checkbox" data-task="3-3" checked><span>Render transcript content with <code>dir="auto"</code> so Hebrew and English use the correct direction.</span></label>
+                <label class="task"><input type="checkbox" data-task="3-4" checked><span>Add copy-to-clipboard and download-as-text actions without adding a frontend build tool.</span></label>
               </div>
               <div class="callout"><strong>Exit check:</strong> Complete the flow using only the browser, test keyboard operation, and visually inspect both Hebrew RTL and English LTR output.</div>
             </div>
@@ -687,7 +687,7 @@ make smoke        # health + end-to-end request against running service</code></
 
   <script>
     (() => {
-      const storageKey = "transcription-architecture-plan-progress-v2";
+      const storageKey = "transcription-architecture-plan-progress-v3";
       const tasks = Array.from(document.querySelectorAll("input[data-task]"));
       const progressBar = document.getElementById("progress-bar");
       const progressLabel = document.getElementById("progress-label");
