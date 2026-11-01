@@ -155,7 +155,7 @@ All settings use the `TRANSCRIPTION_` environment prefix. Defaults are listed in
 | `TRANSCRIPTION_DEVICE` | `cpu` | CTranslate2 device: `cpu`, `cuda`, or `auto` |
 | `TRANSCRIPTION_COMPUTE_TYPE` | `int8` | CPU-friendly quantized inference |
 | `TRANSCRIPTION_BEAM_SIZE` | `5` | Beam-search quality/speed trade-off |
-| `TRANSCRIPTION_VAD_FILTER` | `true` | Remove silence with faster-whisper's VAD |
+| `TRANSCRIPTION_VAD_FILTER` | `true` | Remove silence for speech-oriented recordings; disable for music |
 | `TRANSCRIPTION_MAX_UPLOAD_BYTES` | `104857600` | 100 MiB file-size limit |
 | `TRANSCRIPTION_MAX_MEDIA_DURATION_SECONDS` | `900` | 15-minute synchronous limit |
 | `TRANSCRIPTION_MAX_CONCURRENT_TRANSCRIPTIONS` | `1` | Model inference slots per process |
@@ -325,6 +325,10 @@ to clients. Every response includes `X-Request-ID` for correlation.
   public network in its current form.
 - Automatic language detection and Hebrew/English code-switching are model-dependent and may be
   less accurate than selecting the dominant language explicitly.
+- Voice activity detection is enabled by default for efficient speech transcription. Music-heavy
+  vocals may be classified as non-speech and removed completely; set
+  `TRANSCRIPTION_VAD_FILTER=false`, restart the service, and select the dominant language explicitly
+  for songs. Disabling VAD processes the entire audio track and therefore increases latency.
 
 ## Updating this decision record
 
