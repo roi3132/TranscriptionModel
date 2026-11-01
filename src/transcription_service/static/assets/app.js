@@ -135,6 +135,29 @@ function friendlyError(payload, status) {
   return messages[code] || payload?.error?.message || `The request failed (${status}). Please try again.`;
 }
 
+function wait(milliseconds) {
+  return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+}
+
+async function waitForJob(accepted) {
+  while (true) {
+    const statusResponse = await fetch(accepted.status_url, { headers: { Accept: "application/json" } });
+    const job = await statusResponse.json();
+    if (!statusResponse.ok) throw new Error(friendlyError(job, statusResponse.status));
+    if (job.status === "succeeded") {
+      const resultResponse = await fetch(accepted.result_url, { headers: { Accept: "application/json" } });
+      const result = await resultResponse.json();
+      if (!resultResponse.ok) throw new Error(friendlyError(result, resultResponse.status));
+      return result;
+    }
+    if (job.status === "failed" || job.status === "expired") {
+      throw new Error(job.error_message || `The transcription job ${job.status}.`);
+    }
+    resultBadge.textContent = job.status.toUpperCase();
+    await wait(1000);
+  }
+}
+
 fileInput.addEventListener("change", () => setFile(fileInput.files[0]));
 
 document.querySelector("#remove-file").addEventListener("click", () => {
@@ -199,7 +222,7 @@ form.addEventListener("submit", async (event) => {
       return;
     }
     const response = await fetch(config.transcription_url, { method: "POST", body: formData });
-    const payload = await response.json();
+    let payload = await response.json();
     loadingState.hidden = true;
 
     if (!response.ok) {
@@ -210,11 +233,14 @@ form.addEventListener("submit", async (event) => {
       return;
     }
 
+    if (response.status === 202) {
+      payload = await waitForJob(payload);
+    }
     renderTranscript(payload);
     resultTitle.focus();
-  } catch {
+  } catch (error) {
     loadingState.hidden = true;
-    resultError.textContent = "Could not reach the transcription service. Check that it is running and try again.";
+    resultError.textContent = error.message || "Could not reach the transcription service. Check that it is running and try again.";
     resultError.hidden = false;
     resultTitle.textContent = "Connection problem";
     resultBadge.textContent = "OFFLINE";
@@ -252,9 +278,10 @@ async function updateServiceStatus() {
   try {
     const response = await fetch("/health/ready", { headers: { Accept: "application/json" } });
     if (!response.ok) throw new Error("not ready");
+    const config = await getClientConfig();
     status.classList.add("is-ready");
     status.classList.remove("is-unavailable");
-    statusText.textContent = "Model ready";
+    statusText.textContent = config.async_jobs_enabled ? "Job service ready" : "Model ready";
   } catch {
     status.classList.add("is-unavailable");
     statusText.textContent = "Model unavailable";

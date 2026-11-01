@@ -3,10 +3,11 @@
 A production-minded FastAPI service that accepts an audio or video file and returns a timestamped
 transcription produced by an open multilingual Whisper model from Hugging Face.
 
-The service currently supports the complete synchronous audio and video-container workflow,
-including a browser upload interface and Docker Compose packaging. A three-phase local asynchronous
-job roadmap is approved but not yet implemented. See
-[`docs/architecture-plan.html`](docs/architecture-plan.html) for the ordered implementation plan.
+The service supports a durable asynchronous workflow in Docker Compose and a compatibility
+synchronous workflow for native development. Compose runs the API, an independent inference
+worker, Redis, and PostgreSQL entirely on the local machine—no hosted service or subscription is
+required. See [`docs/architecture-plan.html`](docs/architecture-plan.html) for completed Phase 6
+and the ordered reliability and media roadmap.
 
 ## Current capabilities
 
@@ -21,36 +22,36 @@ job roadmap is approved but not yet implemented. See
   independently of Speech/Music mode. Larger does not guarantee more accurate lyrics.
 - Return full text, detected-language confidence, media duration, processing time, and timestamped
   segments.
+- Accept uploads durably with `202 Accepted`, then expose job status and result resources.
+- Keep accepted jobs and completed results across independent API and worker restarts in local
+  PostgreSQL; persist queued media and the Redis queue in named Docker volumes.
+- Run model inference only in an independent worker when asynchronous mode is enabled.
 - Enforce configurable file-size, media-duration, queue-timeout, and inference-concurrency limits.
 - Expose liveness, readiness, and generated OpenAPI documentation.
-- Avoid retaining the uploaded media or transcription after the response.
+- Delete successfully processed source media. Configurable retention and result expiry arrive in
+  Phase 7; `docker compose down --volumes` deliberately removes all local durable data.
 
 ## Architecture
 
 ```text
-Browser / curl
-      │ multipart/form-data
-      ▼
-BoundedUploadRoute
-  ├── request-body byte limit
-  ├── multipart shape and cleanup
-  └── upload admission limit
-      │
-      ▼
-TranscriptionService
-  └── one bounded worker pipeline
-      │
-      ├── PyAV: decode/count audio within duration limit
-      ├── ModelRegistry: resolve small or lazy large-v3
-      ├── validate language against selected model
-      └── Transcriber: faster-whisper / CTranslate2
+Browser / curl → bounded API upload → media volume → PostgreSQL job
+                                      │                 │
+                                      └→ local Redis → independent worker
+                                                         │
+                                                         ├→ PyAV validation
+                                                         ├→ faster-whisper
+                                                         └→ PostgreSQL result
 ```
 
-The default model loads once during startup, before Uvicorn begins serving HTTP. If initialization
-fails, the app still starts: `/health/ready` returns `503` and `/health/live` returns `200`.
-Blocking media validation and inference run in a worker thread rather than on the HTTP event loop.
-The optional larger model loads on its first request, inside the same inference concurrency limit,
-and is reused afterward. Readiness describes the default model; it does not pre-download large-v3.
+Docker Compose enables asynchronous mode. The API persists media and job state before enqueueing,
+returns promptly with `202`, and never loads Whisper. The worker owns PyAV validation, model loading,
+and inference. PostgreSQL is authoritative for state and results; Redis is the durable handoff queue;
+generated media keys—not client filenames—address files on a shared named volume.
+
+Native mode keeps the original synchronous path for focused development and real-model smoke tests.
+There the default model loads during API startup, blocking validation/inference runs off the HTTP
+event loop, and no upload or result is retained. The two modes share the same `TranscriptionService`,
+model registry, media validation, schemas, and typed errors.
 
 Shared data and adapter protocols live in `domain.py`; model caching lives in `services/models.py`;
 the use case lives in `services/transcription.py`. The review findings and remaining boundaries are
@@ -67,22 +68,23 @@ repository root, start the CPU-first service:
 docker compose up --build
 ```
 
-On first startup, the container downloads the pinned model (about 500 MB) into a named Docker
-volume. The download is separate from the application image and is reused on later starts. Once the
-model is ready, open <http://localhost:8000/>. Stop the foreground service with `Ctrl+C`; the model
-cache remains available. To run detached instead, use `docker compose up --build -d`, follow logs
-with `docker compose logs -f app`, and stop with `docker compose down`.
+Compose starts `api`, `worker`, `postgres`, and `redis`. On first startup, the worker downloads the
+pinned model (about 500 MB) into a named Docker volume. The download is separate from the image and
+is reused on later starts. Once `/health/ready` succeeds, open <http://localhost:8000/>. Stop the
+foreground stack with `Ctrl+C`; all named volumes remain available. To run detached instead, use
+`docker compose up --build -d`, follow logs with `docker compose logs -f api worker`, and stop with
+`docker compose down`.
 
-The container runs as a non-root user with a read-only root filesystem, a bounded temporary
-filesystem for request processing, and only the model cache mounted persistently. The port is bound
-to `127.0.0.1`, so the service is not exposed to other machines by default. Compose reads optional
-overrides from `.env`; start from `cp .env.example .env` if you want to customize the model or
-limits. `docker compose down` preserves the model cache. `docker compose down --volumes` removes
-that cache too and should only be used when you intentionally want to download the weights again.
+The application containers run as a non-root user with read-only root filesystems, bounded temporary
+filesystems, dropped capabilities, and `no-new-privileges`. The port is bound to `127.0.0.1`, so the
+service is not exposed to other machines by default. Compose reads optional overrides from `.env`;
+start from `cp .env.example .env` to customize the model or limits. Named volumes preserve model
+weights, PostgreSQL state/results, Redis AOF data, and accepted media. `docker compose down --volumes`
+removes all four and is intentionally destructive.
 
-Run the full container readiness and browser-page smoke check with `make docker-smoke`. It builds
-and starts the Compose service, waits up to 15 minutes for model readiness, checks the browser page,
-and leaves the service running. `make docker-down` stops it without deleting the model cache.
+Run the container readiness and browser-page smoke check with `make docker-smoke`. It builds and
+starts the stack, waits for API readiness, checks the browser page, and leaves the services running.
+`make docker-down` stops them without deleting durable data.
 
 ### Native Python
 
@@ -129,7 +131,9 @@ Available endpoints:
 - API documentation: <http://localhost:8000/docs>
 - Liveness: <http://localhost:8000/health/live>
 - Readiness: <http://localhost:8000/health/ready>
-- Transcription: `POST http://localhost:8000/v1/transcriptions`
+- Submit transcription: `POST http://localhost:8000/v1/transcriptions`
+- Job status: `GET http://localhost:8000/v1/transcriptions/{job_id}`
+- Job result: `GET http://localhost:8000/v1/transcriptions/{job_id}/result`
 
 Example:
 
@@ -142,7 +146,20 @@ curl --fail \
   http://localhost:8000/v1/transcriptions
 ```
 
-Example response:
+In Docker Compose, this returns `202 Accepted`, sets `Location` to the status resource, and returns
+both polling URLs:
+
+```json
+{
+  "id": "163df38c-bd7d-4946-b182-bcf367ffa18b",
+  "status": "queued",
+  "status_url": "http://localhost:8000/v1/transcriptions/163df38c-bd7d-4946-b182-bcf367ffa18b",
+  "result_url": "http://localhost:8000/v1/transcriptions/163df38c-bd7d-4946-b182-bcf367ffa18b/result"
+}
+```
+
+Poll `status_url` until it reports `succeeded`, then fetch `result_url`. Native mode defaults to the
+original synchronous `200 OK` response:
 
 ```json
 {
@@ -209,6 +226,13 @@ Readiness, the browser UI, OpenAPI, non-root execution, read-only root filesyste
 dropped capabilities, and `no-new-privileges` were verified. Port `8002` was used for this check
 because the project's native development server was already using the documented port `8000`.
 
+Phase 6 verification on 1 November 2026 passed Ruff, mypy, all 68 fast tests, wheel packaging, and
+the complete four-service Compose flow. A generated English M4A received `202`, moved through
+`queued` to `succeeded`, and produced a real faster-whisper result. Restarting both API and worker
+preserved and returned the same PostgreSQL-backed result. Redis and PostgreSQL health checks passed,
+the API did not load a model, and the worker reused the existing model-cache volume. Port `8002` was
+again used only to avoid the already-running native development server.
+
 ## Configuration
 
 All settings use the `TRANSCRIPTION_` environment prefix. Defaults are listed in `.env.example`.
@@ -227,6 +251,11 @@ All settings use the `TRANSCRIPTION_` environment prefix. Defaults are listed in
 | `TRANSCRIPTION_MAX_MEDIA_DURATION_SECONDS` | `900` | 15-minute synchronous limit |
 | `TRANSCRIPTION_MAX_CONCURRENT_TRANSCRIPTIONS` | `1` | Shared decoding, model loading, and inference slots per process |
 | `TRANSCRIPTION_INFERENCE_QUEUE_TIMEOUT_SECONDS` | `5` | Wait before returning `model_busy` |
+| `TRANSCRIPTION_ASYNC_JOBS_ENABLED` | `false` | Enable durable job submission; Compose sets this to `true` |
+| `TRANSCRIPTION_DATABASE_URL` | Compose PostgreSQL URL | Authoritative job and result store |
+| `TRANSCRIPTION_REDIS_URL` | Compose Redis URL | Durable job broker |
+| `TRANSCRIPTION_REDIS_QUEUE_NAME` | `transcription:jobs` | Redis queue key |
+| `TRANSCRIPTION_MEDIA_STORAGE_PATH` | `/data/media` | Generated-key media directory shared by API and worker |
 
 ## Dependency compatibility note
 
@@ -315,20 +344,21 @@ clip, small took 15.2 seconds and produced garbled words; large-v3 took 21.5 sec
 only “תודה רבה.” with an implausible timestamp. These are one-clip observations, not a benchmark or
 quality guarantee. Singing remains best-effort, and the larger option is retained for user comparison.
 
-### No database in the initial product
+### PostgreSQL only for the durable deployment
 
 The requested workflow is upload → transcribe → return. There are no accounts, history, sharing,
 audit, billing, or retention requirements. Adding PostgreSQL would introduce migrations,
 transactions, cleanup rules, privacy obligations, and authorization questions without supporting a
 current requirement.
 
-The service is intentionally stateless: uploaded media is closed after the request, and neither
-media nor transcript is retained. This also makes horizontal replication straightforward.
+That original synchronous mode remains intentionally stateless: uploaded media is closed after the
+request, and neither media nor transcript is retained.
 
-A database becomes appropriate when the product adds durable asynchronous jobs, user-owned history,
-or retention. Durable jobs are now the approved next scope, so the next implementation will add a
-local PostgreSQL service for job state and results. This does not change the current runtime: until
-the roadmap below is implemented, requests remain synchronous and no media or transcript is retained.
+Durable asynchronous jobs now justify PostgreSQL. Compose stores job state and JSON results there,
+while Redis handles queue delivery and a generated-key media volume bridges API and worker. These
+services are local containers with named volumes, not managed subscriptions. Keeping persistence
+behind `JobRepository` and `MediaStore` protocols preserves the original use case and leaves room
+for S3-compatible media storage or a managed database at multi-host scale.
 
 ### Synchronous, bounded requests
 
@@ -344,7 +374,7 @@ limit is also checked after parsing. Parser errors and early rejections close pa
 If increasing file size or admission concurrency, also increase Compose's 256 MiB temporary
 filesystem appropriately. These limits are per process, not shared across replicas.
 
-For longer recordings or production traffic, the approved local architecture is:
+For Compose deployments, the implemented local architecture is:
 
 ```text
 POST upload → local media volume → local Redis queue → inference worker
@@ -355,11 +385,10 @@ GET /v1/transcriptions/{job_id}
 GET /v1/transcriptions/{job_id}/result
 ```
 
-Every component will run through Docker Compose on the reviewer's machine. Redis is self-hosted in a
-container and requires no managed service or subscription. Uploaded media will initially live on a
-named Docker volume behind a `MediaStore` interface; S3-compatible storage remains a deployment
-option, not a local requirement. An in-process background task remains rejected because a process
-restart would lose accepted work.
+Every component runs through Docker Compose on the reviewer's machine. Redis is self-hosted and
+requires no managed service or subscription. Uploaded media lives on a named Docker volume behind a
+`MediaStore` interface; S3-compatible storage remains a deployment option, not a local requirement.
+An in-process background task remains rejected because a process restart would lose accepted work.
 
 ### One inference at a time by default
 
@@ -446,33 +475,33 @@ to clients. Every response includes `X-Request-ID` for correlation.
 ### Same-origin, buildless browser interface
 
 The upload experience is a single HTML page with local CSS and JavaScript served by FastAPI. It
-submits to the existing API, so local development and deployment need only one process and there is
-no separate frontend server, framework, bundler, or extra runtime dependency. Static assets are
-packaged with the Python wheel. The page does not load fonts, scripts, or styles from third-party
-CDNs, and the service still discards uploaded media and results after responding.
+submits to the existing API and follows a `202` response by polling job status and fetching the
+result. Native synchronous responses remain supported. There is no separate frontend server,
+framework, bundler, or extra runtime dependency. Static assets are packaged with the Python wheel,
+and the page does not load fonts, scripts, or styles from third-party CDNs.
 The page obtains the transcription URL and upload limit from `/client-config`, so a configured API
 prefix works without changing JavaScript. Server-side validation remains authoritative.
 
-This intentionally small interface is appropriate for the assignment's one-request workflow. A
-larger product with navigation, authentication, durable job history, or multiple frontend teams
+This intentionally small interface is appropriate for the assignment's submit-and-poll workflow. A
+larger product with navigation, authentication, job history, or multiple frontend teams
 could justify a separately deployed frontend and its added build and deployment pipeline.
 
-### CPU-first container and persistent model cache
+### CPU-first local stack and explicit durable volumes
 
-The Docker image installs the exact locked Python environment, runs the API as an unprivileged user,
-and keeps model weights out of the image. Compose stores only the Hugging Face cache in a named
-volume; uploaded media is handled in bounded temporary storage and is not written to that volume.
-The container uses one Uvicorn worker so the model is loaded once and the in-process inference
-semaphore remains meaningful. The port binds to localhost, and the container drops Linux
-capabilities and has a read-only root filesystem.
+The Docker image installs the exact locked Python environment, runs application processes as an
+unprivileged user, and keeps model weights out of the image. Compose uses separate named volumes for
+the Hugging Face cache, queued media, PostgreSQL data, and Redis AOF persistence. The API uses one
+Uvicorn worker and does not load a model; one independent inference worker loads and reuses the
+default model. The port binds to localhost, and both application containers drop Linux capabilities
+and have read-only root filesystems.
 
 This keeps rebuilds smaller than baking roughly 500 MB of weights into every image and keeps local
 startup convenient on CPU-only machines. Alternatives include baking model weights into an image
 for an offline deployment, or using a bind mount for a host-managed cache; those choices trade
 larger image distribution or host-specific permissions for their respective operational benefits.
-For multiple production replicas, the model cache can be independently warmed per instance; neither
-media nor transcripts should be added to persistent storage without an explicit retention and
-authorization requirement.
+For multiple hosts, move media behind an S3-compatible `MediaStore`, use shared managed equivalents
+for PostgreSQL/Redis if desired, and warm each worker's model cache. Phase 7 adds explicit retention
+before this local durable stack should be exposed as a long-running public service.
 
 The base image is pinned to the maintained Python 3.12 Bookworm line rather than an immutable
 digest, so rebuilding can pick up upstream security fixes. A release deployment that requires
@@ -487,13 +516,13 @@ Wheel packaging relies on Hatch's normal package discovery for static files. The
 duplicate `force-include` rule that broke wheel builds despite passing editable-install tests; that
 rule was removed and CI now also runs `make package`.
 
-## Approved next implementation: three phases
+## Implementation roadmap
 
-The items in this section are planned work, not current capabilities. The goal is to meet the
-backend-interview requirement for durable asynchronous jobs while keeping the complete development
-and review environment local and reproducible with one Docker Compose command.
+Phase 1 below is implemented as repository Phase 6. Phases 2 and 3 remain ordered work. The goal is
+to meet the backend-interview requirements while keeping the complete development and review
+environment local and reproducible with one Docker Compose command.
 
-### Phase 1 — Local durable asynchronous jobs
+### Phase 1 — Local durable asynchronous jobs (implemented)
 
 - Split the Compose deployment into `api` and `worker` services while reusing the existing media,
   model-registry, and `Transcriber` boundaries.
@@ -505,10 +534,10 @@ and review environment local and reproducible with one Docker Compose command.
   `GET /v1/transcriptions/{job_id}/result` for completed results.
 - Use an explicit state machine: `queued`, `running`, `succeeded`, `failed`, and `expired`. Do not
   describe a worker thread in the API process as an asynchronous job worker.
-- Add integration tests that restart the API independently of the worker and prove accepted work and
-  completed results survive process restarts.
+- Add integration tests plus a Compose smoke test that restart API and worker and prove accepted work
+  and completed results survive process restarts.
 
-### Phase 2 — Reliable job execution and lifecycle
+### Phase 2 — Reliable job execution and lifecycle (next)
 
 - Add bounded retries with attempt counts, backoff, stable failure codes, and a dead-letter or
   terminal-failure policy.
@@ -539,8 +568,9 @@ metrics. These remain useful scaling or product discussions, not prerequisites f
 
 ## Current limitations and next steps
 
-- Durable jobs, Redis, PostgreSQL, the independent worker, and status/result endpoints described
-  above are not implemented yet.
+- Durable jobs currently have one delivery attempt. Bounded retries, hard process deadlines,
+  idempotency/hash caching, abandoned-claim recovery, retention, cleanup, and worker-aware readiness
+  are Phase 7.
 - Only the first audio stream in a video container is transcribed; the API does not yet expose audio
   track selection.
 - There is no authentication or rate limiting. Do not expose this service directly to an untrusted
@@ -550,9 +580,10 @@ metrics. These remain useful scaling or product discussions, not prerequisites f
 - Music mode processes the full audio track and is therefore slower than speech mode.
 - Docker uses CPU inference and a single worker. A production GPU or multi-replica deployment needs
   deployment-specific resource allocation, scaling, and model-cache warming.
-- Native decoding/inference has no hard execution deadline and runs in the API process. Duration
-  and admission limits bound normal work, but hostile inputs and hard cancellation require worker
-  process isolation; public deployment also needs ingress timeouts and request-rate limits.
+- Native decoding/inference has no hard execution deadline. Compose moves it out of the API but the
+  Phase 6 worker still performs native work in its long-lived process. Phase 7 adds per-attempt
+  subprocess isolation and hard termination; public deployment also needs ingress timeouts,
+  authentication, and request-rate limits.
 
 ## Updating this decision record
 

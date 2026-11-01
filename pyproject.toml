@@ -13,8 +13,10 @@ dependencies = [
   "av>=14,<19",
   "fastapi>=0.115,<1",
   "faster-whisper>=1.1,<2",
+  "psycopg[binary]>=3.2,<4",
   "pydantic-settings>=2.7,<3",
   "python-multipart>=0.0.20,<1",
+  "redis>=6,<8",
   "structlog>=24.4,<27",
   "uvicorn[standard]>=0.34,<1",
 ]

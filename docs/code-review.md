@@ -1,26 +1,25 @@
 # Code and architecture review
 
-The service remains a synchronous, stateless FastAPI application. Python, PyAV, faster-whisper,
-pinned Hugging Face revisions, the two model profiles, and the decision to omit a database remain
-appropriate for the assignment. The useful changes are at resource and ownership boundaries, not
-additional infrastructure.
+The service now has two deliberate deployment modes: a synchronous, stateless native development
+mode and a durable asynchronous Docker Compose mode. Python, PyAV, faster-whisper, pinned Hugging
+Face revisions, and the two model profiles remain appropriate. PostgreSQL is now justified for job
+state/results, Redis for durable handoff, and a local named volume for queued media.
 
-## Approved next roadmap — not yet implemented
+## Roadmap status
 
-The interview scope has expanded since this review. The current findings below still describe the
-implemented synchronous service; they must not be read as claims that durable jobs already exist.
-The next work is recorded as phases 6–8 in `docs/architecture-plan.html` and in the README:
+The interview scope expanded after the synchronous review. Phase 6 is implemented and verified;
+phases 7–8 remain ordered work in `docs/architecture-plan.html` and the README:
 
-1. Run the API, Redis broker, PostgreSQL job store, media volume, and independent inference worker
-   locally through Docker Compose; return `202` and expose job status and result endpoints.
-2. Add retries, hard worker deadlines, idempotency/hash deduplication, crash recovery, retention,
+1. **Implemented:** run the API, Redis broker, PostgreSQL job store, media volume, and independent
+   inference worker locally; return `202` and expose job status and result endpoints.
+2. **Next:** add retries, hard worker deadlines, idempotency/hash deduplication, crash recovery, retention,
    cleanup, and component-specific readiness.
-3. Add explicit 16 kHz mono normalization, defined silent-input behavior, TXT/SRT/VTT exports, rate
+3. **Later:** add explicit 16 kHz mono normalization, defined silent-input behavior, TXT/SRT/VTT exports, rate
    limiting, long-file chunking, and asynchronous UI polling.
 
-Managed cloud services are not required. Redis and PostgreSQL will be self-hosted containers, and
-the first `MediaStore` implementation will use a named local volume. S3-compatible storage and
-multi-host scaling remain later deployment options.
+Managed cloud services are not required. Redis and PostgreSQL are self-hosted containers, and the
+first `MediaStore` implementation uses a named local volume. S3-compatible storage and multi-host
+scaling remain later deployment options.
 
 ## Findings fixed
 
@@ -52,9 +51,9 @@ multi-host scaling remain later deployment options.
 
 ## Boundaries retained deliberately
 
-- Native codecs and model execution share the API process. Python cannot forcibly stop a stuck
-  native thread safely. A hard wall-clock deadline or hostile-input sandbox needs separate worker
-  processes, resource limits, and a durable job design rather than an asyncio timeout.
+- Native mode still shares codecs/model execution with the API process. Compose moves inference to
+  an independent worker, but Phase 6 does not yet isolate each attempt. A hard wall-clock deadline
+  or hostile-input sandbox needs a terminable per-attempt subprocess rather than an asyncio timeout.
 - Admission and inference limits are per process. Multiple Uvicorn workers multiply both resident
   model memory and allowed work. Keep one worker per configured instance.
 - Two model instances may remain resident after the larger option is first used. The small model
@@ -63,7 +62,7 @@ multi-host scaling remain later deployment options.
 - Duration validation intentionally decodes audio before faster-whisper decodes it again. This
   costs CPU, but rejects overlong inputs before the model's full-array preprocessing and avoids
   duplicating its resampling/feature-extraction implementation.
-- No authentication, durable jobs/history, reverse-proxy deployment, or accuracy guarantee for
+- No authentication, user-owned history, reverse-proxy deployment, or accuracy guarantee for
   singing was added. Public ingress needs authentication, rate limits, and upload/idle timeouts.
 - Docker Desktop on Apple Silicon built and ran the ARM64 image successfully. The Compose-configured
   container completed real inference and the named model volume survived container replacement.
@@ -89,3 +88,7 @@ Phase 5 verification on 1 November 2026 produced the following evidence:
   same volume and completed real inference. Container inspection confirmed UID/GID 10001,
   read-only root filesystem, a 256 MiB `noexec,nosuid` tmpfs, all capabilities dropped, and
   `no-new-privileges`. Port 8002 was used because the native development server occupied port 8000.
+- Phase 6 added 68 passing fast tests and the locked Redis/psycopg clients. The four-service Compose
+  stack accepted a generated M4A with `202`, completed real inference, returned the persisted result,
+  and returned that same result after both API and worker restarted. PostgreSQL, Redis, media, and
+  model-cache volumes remained local and no cloud account was used.

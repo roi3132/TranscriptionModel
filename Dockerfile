@@ -17,8 +17,8 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10001 transcriber \
     && useradd --uid 10001 --gid transcriber --create-home --shell /usr/sbin/nologin transcriber \
-    && mkdir -p /home/transcriber/.cache/huggingface \
-    && chown -R transcriber:transcriber /home/transcriber
+    && mkdir -p /home/transcriber/.cache/huggingface /data/media \
+    && chown -R transcriber:transcriber /home/transcriber /data/media
 
 # Resolve locked runtime dependencies separately so source edits do not reinstall them.
 COPY pyproject.toml uv.lock README.md ./

@@ -35,13 +35,13 @@ docker-up:
 
 docker-smoke: docker-up
 	@attempt=0; \
-	until docker compose exec -T app python -c "from urllib.request import urlopen; urlopen('http://127.0.0.1:8000/health/ready', timeout=2)" >/dev/null 2>&1; do \
+	until docker compose exec -T api python -c "from urllib.request import urlopen; urlopen('http://127.0.0.1:8000/health/ready', timeout=2)" >/dev/null 2>&1; do \
 		attempt=$$((attempt + 1)); \
-		if [ $$attempt -ge 180 ]; then docker compose logs app; exit 1; fi; \
+		if [ $$attempt -ge 180 ]; then docker compose logs api worker; exit 1; fi; \
 		sleep 5; \
 	done
-	docker compose exec -T app python -c "from urllib.request import urlopen; print(urlopen('http://127.0.0.1:8000/').status)"
-	docker compose exec -T app python -c "from urllib.request import urlopen; print(urlopen('http://127.0.0.1:8000/health/ready').read().decode())"
+	docker compose exec -T api python -c "from urllib.request import urlopen; print(urlopen('http://127.0.0.1:8000/').status)"
+	docker compose exec -T api python -c "from urllib.request import urlopen; print(urlopen('http://127.0.0.1:8000/health/ready').read().decode())"
 
 docker-down:
 	docker compose down

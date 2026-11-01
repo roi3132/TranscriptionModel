@@ -1,36 +1,98 @@
+x-service-environment: &service-environment
+  TRANSCRIPTION_ENVIRONMENT: production
+  TRANSCRIPTION_LOG_LEVEL: ${TRANSCRIPTION_LOG_LEVEL:-INFO}
+  TRANSCRIPTION_ASYNC_JOBS_ENABLED: "true"
+  TRANSCRIPTION_DATABASE_URL: postgresql://transcription:transcription@postgres:5432/transcription
+  TRANSCRIPTION_REDIS_URL: redis://redis:6379/0
+  TRANSCRIPTION_REDIS_QUEUE_NAME: transcription:jobs
+  TRANSCRIPTION_MEDIA_STORAGE_PATH: /data/media
+  TRANSCRIPTION_MODEL_ID: ${TRANSCRIPTION_MODEL_ID:-Systran/faster-whisper-small}
+  TRANSCRIPTION_MODEL_REVISION: ${TRANSCRIPTION_MODEL_REVISION:-536b0662742c02347bc0e980a01041f333bce120}
+  TRANSCRIPTION_LARGER_MODEL_ID: ${TRANSCRIPTION_LARGER_MODEL_ID:-Systran/faster-whisper-large-v3}
+  TRANSCRIPTION_LARGER_MODEL_REVISION: ${TRANSCRIPTION_LARGER_MODEL_REVISION:-edaa852ec7e145841d8ffdb056a99866b5f0a478}
+  TRANSCRIPTION_DEVICE: ${TRANSCRIPTION_DEVICE:-cpu}
+  TRANSCRIPTION_COMPUTE_TYPE: ${TRANSCRIPTION_COMPUTE_TYPE:-int8}
+  TRANSCRIPTION_BEAM_SIZE: ${TRANSCRIPTION_BEAM_SIZE:-5}
+  TRANSCRIPTION_MAX_UPLOAD_BYTES: ${TRANSCRIPTION_MAX_UPLOAD_BYTES:-104857600}
+  TRANSCRIPTION_MAX_CONCURRENT_UPLOADS: ${TRANSCRIPTION_MAX_CONCURRENT_UPLOADS:-2}
+  TRANSCRIPTION_MAX_MEDIA_DURATION_SECONDS: ${TRANSCRIPTION_MAX_MEDIA_DURATION_SECONDS:-900}
+  TRANSCRIPTION_MAX_CONCURRENT_TRANSCRIPTIONS: ${TRANSCRIPTION_MAX_CONCURRENT_TRANSCRIPTIONS:-1}
+  TRANSCRIPTION_INFERENCE_QUEUE_TIMEOUT_SECONDS: ${TRANSCRIPTION_INFERENCE_QUEUE_TIMEOUT_SECONDS:-5}
+  HF_HOME: /home/transcriber/.cache/huggingface
+  TMPDIR: /tmp
+
+x-service-security: &service-security
+  read_only: true
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,size=256m
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+
 services:
-  app:
+  api:
     build: .
     image: transcription-service:local
     init: true
     ports:
-      - "127.0.0.1:8000:8000"
-    environment:
-      TRANSCRIPTION_ENVIRONMENT: production
-      TRANSCRIPTION_LOG_LEVEL: ${TRANSCRIPTION_LOG_LEVEL:-INFO}
-      TRANSCRIPTION_MODEL_ID: ${TRANSCRIPTION_MODEL_ID:-Systran/faster-whisper-small}
-      TRANSCRIPTION_MODEL_REVISION: ${TRANSCRIPTION_MODEL_REVISION:-536b0662742c02347bc0e980a01041f333bce120}
-      TRANSCRIPTION_LARGER_MODEL_ID: ${TRANSCRIPTION_LARGER_MODEL_ID:-Systran/faster-whisper-large-v3}
-      TRANSCRIPTION_LARGER_MODEL_REVISION: ${TRANSCRIPTION_LARGER_MODEL_REVISION:-edaa852ec7e145841d8ffdb056a99866b5f0a478}
-      TRANSCRIPTION_DEVICE: ${TRANSCRIPTION_DEVICE:-cpu}
-      TRANSCRIPTION_COMPUTE_TYPE: ${TRANSCRIPTION_COMPUTE_TYPE:-int8}
-      TRANSCRIPTION_BEAM_SIZE: ${TRANSCRIPTION_BEAM_SIZE:-5}
-      TRANSCRIPTION_MAX_UPLOAD_BYTES: ${TRANSCRIPTION_MAX_UPLOAD_BYTES:-104857600}
-      TRANSCRIPTION_MAX_CONCURRENT_UPLOADS: ${TRANSCRIPTION_MAX_CONCURRENT_UPLOADS:-2}
-      TRANSCRIPTION_MAX_MEDIA_DURATION_SECONDS: ${TRANSCRIPTION_MAX_MEDIA_DURATION_SECONDS:-900}
-      TRANSCRIPTION_MAX_CONCURRENT_TRANSCRIPTIONS: ${TRANSCRIPTION_MAX_CONCURRENT_TRANSCRIPTIONS:-1}
-      TRANSCRIPTION_INFERENCE_QUEUE_TIMEOUT_SECONDS: ${TRANSCRIPTION_INFERENCE_QUEUE_TIMEOUT_SECONDS:-5}
-      HF_HOME: /home/transcriber/.cache/huggingface
-      TMPDIR: /tmp
+      - "127.0.0.1:${TRANSCRIPTION_PORT:-8000}:8000"
+    environment: *service-environment
     volumes:
+      - media_store:/data/media
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    <<: *service-security
+
+  worker:
+    image: transcription-service:local
+    init: true
+    command: ["python", "-m", "transcription_service.worker"]
+    environment: *service-environment
+    volumes:
+      - media_store:/data/media
       - model_cache:/home/transcriber/.cache/huggingface
-    read_only: true
-    tmpfs:
-      - /tmp:rw,noexec,nosuid,size=256m
-    cap_drop:
-      - ALL
-    security_opt:
-      - no-new-privileges:true
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      disable: true
+    <<: *service-security
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: transcription
+      POSTGRES_USER: transcription
+      POSTGRES_PASSWORD: transcription
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U transcription -d transcription"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  redis:
+    image: redis:7.2-alpine
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
 
 volumes:
+  media_store:
   model_cache:
+  postgres_data:
+  redis_data:

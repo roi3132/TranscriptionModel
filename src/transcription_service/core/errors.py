@@ -129,6 +129,30 @@ class UploadBusyError(ApplicationError):
         super().__init__(headers={"Retry-After": "1"})
 
 
+class JobNotFoundError(ApplicationError):
+    """Raised when a requested transcription job does not exist."""
+
+    code = "job_not_found"
+    status_code = HTTPStatus.NOT_FOUND
+    default_message = "The transcription job was not found."
+
+
+class JobResultNotReadyError(ApplicationError):
+    """Raised when a job has not produced a result yet."""
+
+    code = "job_result_not_ready"
+    status_code = HTTPStatus.CONFLICT
+    default_message = "The transcription result is not ready."
+
+
+class JobInfrastructureError(ApplicationError):
+    """Raised when durable job infrastructure is unavailable."""
+
+    code = "job_infrastructure_unavailable"
+    status_code = HTTPStatus.SERVICE_UNAVAILABLE
+    default_message = "The transcription job service is unavailable."
+
+
 def _request_id(request: Request) -> str:
     return getattr(request.state, "request_id", "unknown")
 

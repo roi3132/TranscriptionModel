@@ -257,7 +257,7 @@
       <h1>Transcription Service</h1>
       <p class="lede">A decision-complete architecture and ordered delivery plan for a Python service that accepts media, transcribes Hebrew and English with an open Hugging Face model, and returns timestamped JSON.</p>
       <div class="meta" aria-label="Plan metadata">
-        <span class="pill"><strong>Status</strong> Synchronous release implemented · async roadmap approved</span>
+        <span class="pill"><strong>Status</strong> Durable jobs implemented · reliability next</span>
         <span class="pill"><strong>Original budget</strong> 24 hours</span>
         <span class="pill"><strong>Default target</strong> CPU-only Docker</span>
         <span class="pill"><strong>Updated</strong> 1 November 2026</span>
@@ -282,7 +282,7 @@
       <main>
         <section id="brief">
           <h2>Handoff brief</h2>
-          <p class="section-intro">Phases 0–5 describe the existing synchronous release. Phases 6–8 are the approved next implementation and remain unchecked. Build them in order: establish durable jobs before reliability policies, then close the remaining interview-scope gaps.</p>
+          <p class="section-intro">Phases 0–6 are implemented. Phases 7–8 remain ordered work: harden the durable job lifecycle before closing the remaining interview-scope gaps.</p>
           <div class="callout success"><strong>Primary outcome:</strong> A reviewer can clone the repository, run one Docker command, submit an audio or video file, receive a durable job ID, and retrieve a Hebrew or English transcription with timestamped segments after an independent worker completes it.</div>
           <div class="grid">
             <div class="note">
@@ -314,13 +314,13 @@
             <div class="decision"><div class="label">HTTP framework</div><div class="value">FastAPI + Uvicorn</div><div class="reason">Typed contracts, generated OpenAPI, lifecycle hooks, and mature file-upload handling.</div></div>
             <div class="decision"><div class="label">Inference runtime</div><div class="value">faster-whisper</div><div class="reason">CTranslate2-backed native inference with CPU int8 and GPU configuration options.</div></div>
             <div class="decision"><div class="label">Default model</div><div class="value">Systran/faster-whisper-small</div><div class="reason">Multilingual model supporting Hebrew (<code>he</code>) and English with practical CPU requirements.</div></div>
-            <div class="decision"><div class="label">Persistence</div><div class="value">Current: none · Planned: local PostgreSQL + volumes</div><div class="reason">Durable jobs now justify persisted state, results, media, and explicit retention without requiring a cloud account.</div></div>
-            <div class="decision"><div class="label">Execution</div><div class="value">Current: synchronous · Planned: Redis queue + worker</div><div class="reason">The completed vertical slice stays documented accurately while phases 6–8 move inference outside the HTTP process.</div></div>
+            <div class="decision"><div class="label">Persistence</div><div class="value">Local PostgreSQL + named volumes</div><div class="reason">Durable jobs justify persisted state, results, queued media, and explicit retention without requiring a cloud account.</div></div>
+            <div class="decision"><div class="label">Execution</div><div class="value">Redis queue + independent worker</div><div class="reason">Compose keeps inference outside the HTTP process; native mode retains the synchronous development path.</div></div>
             <div class="decision"><div class="label">Package management</div><div class="value">uv + pyproject.toml</div><div class="reason">Fast reproducible setup and a committed transitive dependency lockfile.</div></div>
             <div class="decision"><div class="label">Default limits</div><div class="value">100 MiB / 15 minutes</div><div class="reason">Configurable guardrails that keep synchronous CPU requests bounded.</div></div>
             <div class="decision"><div class="label">Concurrency</div><div class="value">1 inference per process</div><div class="reason">Predictable model memory use; run blocking inference off the event loop.</div></div>
           </div>
-          <div class="callout warning"><strong>Database decision:</strong> PostgreSQL is now justified by the approved durable-job requirement. It will store job state and result metadata locally; a named-volume <code>MediaStore</code> will hold uploaded media. Redis is a local broker, not a subscription service.</div>
+          <div class="callout success"><strong>Database decision implemented:</strong> PostgreSQL stores job state and result metadata locally; a named-volume <code>MediaStore</code> holds queued media. Redis is a local broker, not a subscription service.</div>
         </section>
 
         <section id="architecture">
@@ -354,7 +354,7 @@
           </ol>
 
           <div class="callout"><strong>Model lifecycle:</strong> Load the model once in FastAPI's lifespan hook. Readiness is false until loading succeeds. Run a single Uvicorn worker by default because additional workers duplicate model memory.</div>
-          <div class="callout warning"><strong>Planned lifecycle:</strong> This diagram describes the current release. Phase 6 moves model ownership into an independent worker. The API persists the upload and job before enqueueing, returns <code>202</code>, and can restart without losing accepted work.</div>
+          <div class="callout success"><strong>Durable lifecycle:</strong> Compose places model ownership in an independent worker. The API persists the upload and job before enqueueing, returns <code>202</code>, and can restart without losing accepted work.</div>
         </section>
 
         <section id="contract">
@@ -412,7 +412,7 @@
   }
 }</code></pre>
           <p>Log the exception and context server-side, but do not expose stack traces, local paths, or dependency error strings to clients.</p>
-          <div class="callout warning"><strong>Phase 6 contract change:</strong> <code>POST /v1/transcriptions</code> will return <code>202 Accepted</code>, a job ID, and a <code>Location</code> header. <code>GET /v1/transcriptions/{job_id}</code> will return <code>queued</code>, <code>running</code>, <code>succeeded</code>, <code>failed</code>, or <code>expired</code>. <code>GET /v1/transcriptions/{job_id}/result</code> will return JSON by default and later support TXT, SRT, and VTT.</div>
+          <div class="callout success"><strong>Phase 6 contract:</strong> In asynchronous mode, <code>POST /v1/transcriptions</code> returns <code>202 Accepted</code>, a job ID, and a <code>Location</code> header. <code>GET /v1/transcriptions/{job_id}</code> returns <code>queued</code>, <code>running</code>, <code>succeeded</code>, <code>failed</code>, or <code>expired</code>. <code>GET /v1/transcriptions/{job_id}/result</code> returns JSON; TXT, SRT, and VTT remain Phase 8.</div>
         </section>
 
         <section id="structure">
@@ -422,22 +422,27 @@
 ├── src/transcription_service/
 │   ├── __init__.py
 │   ├── main.py                    # create_app + lifespan
+│   ├── worker.py                  # independent inference process
 │   ├── api/
 │   │   ├── health.py
 │   │   └── transcriptions.py
+│   ├── jobs/
+│   │   └── domain.py              # job state + persistence ports
 │   ├── core/
 │   │   ├── config.py              # pydantic-settings
 │   │   ├── errors.py              # typed app errors + mapping
 │   │   └── logging.py             # request-aware structured logs
 │   ├── schemas/
-│   │   └── transcription.py       # request/response models
+│   │   ├── jobs.py                # status/result resources
+│   │   └── transcription.py       # transcription models
 │   ├── services/
-│   │   └── transcription.py       # use case + Transcriber protocol
+│   │   ├── jobs.py                # submission + worker orchestration
+│   │   └── transcription.py       # transcription use case
 │   ├── adapters/
 │   │   ├── faster_whisper.py      # model implementation
+│   │   ├── jobs.py                # PostgreSQL, Redis, local media
 │   │   └── media.py               # PyAV inspection
-│   └── web/
-│       └── index.html              # minimal upload UI
+│   └── static/                     # minimal polling UI
 ├── tests/
 │   ├── unit/
 │   ├── integration/
@@ -453,10 +458,10 @@
 ├── uv.lock
 └── README.md</code></pre>
           <div class="grid">
-            <div class="note"><h3>Runtime dependencies</h3><p>FastAPI, Uvicorn, faster-whisper, PyAV, pydantic-settings, python-multipart, and a mature structured-logging package. Import direct dependencies explicitly even when another library currently installs them transitively.</p></div>
+            <div class="note"><h3>Runtime dependencies</h3><p>FastAPI, Uvicorn, faster-whisper, PyAV, psycopg, redis-py, pydantic-settings, python-multipart, and structlog. Import direct dependencies explicitly even when another library currently installs them transitively.</p></div>
             <div class="note"><h3>Development dependencies</h3><p>pytest, httpx, pytest-cov, Ruff, and mypy. Pin all transitive versions through <code>uv.lock</code>; do not hand-maintain a second requirements file.</p></div>
           </div>
-          <div class="callout warning"><strong>Planned structure additions:</strong> Phase 6 adds job routes and schemas, job and media-store interfaces, PostgreSQL and local-volume adapters, worker entry points, migrations, and integration tests. Keep queue-library details out of the route and transcription service layers.</div>
+          <div class="callout success"><strong>Phase 6 structure:</strong> Job routes and schemas, job and media-store interfaces, PostgreSQL and local-volume adapters, a worker entry point, migrations, and integration tests are implemented. Queue-library details remain outside route and transcription-service layers.</div>
         </section>
 
         <section id="plan">
@@ -569,16 +574,16 @@
             <div class="phase-number">6</div>
             <div>
               <h3>Local durable asynchronous jobs</h3>
-              <div class="phase-meta">Next implementation · Complete locally with Docker Compose</div>
+              <div class="phase-meta">Completed 1 November 2026 · Local Docker Compose</div>
               <div class="tasks">
-                <label class="task"><input type="checkbox" data-task="6-1"><span>Split the deployment into independent <code>api</code> and <code>worker</code> services while reusing the existing <code>Transcriber</code>, media, and model-registry boundaries.</span></label>
-                <label class="task"><input type="checkbox" data-task="6-2"><span>Add local Redis as the job broker, local PostgreSQL for durable state and results, and named volumes for Redis persistence, PostgreSQL, media, and the Hugging Face cache.</span></label>
-                <label class="task"><input type="checkbox" data-task="6-3"><span>Persist the upload and job before enqueueing; return <code>202 Accepted</code> with a job ID and <code>Location</code> header.</span></label>
-                <label class="task"><input type="checkbox" data-task="6-4"><span>Implement status and result endpoints with the state machine <code>queued → running → succeeded|failed → expired</code>.</span></label>
-                <label class="task"><input type="checkbox" data-task="6-5"><span>Add migrations and repository/storage interfaces so PostgreSQL and local media storage do not leak into HTTP or model code.</span></label>
-                <label class="task"><input type="checkbox" data-task="6-6"><span>Test that accepted jobs and completed results survive independent API and worker restarts.</span></label>
+                <label class="task"><input type="checkbox" data-task="6-1" checked><span>Split the deployment into independent <code>api</code> and <code>worker</code> services while reusing the existing <code>Transcriber</code>, media, and model-registry boundaries.</span></label>
+                <label class="task"><input type="checkbox" data-task="6-2" checked><span>Add local Redis as the job broker, local PostgreSQL for durable state and results, and named volumes for Redis persistence, PostgreSQL, media, and the Hugging Face cache.</span></label>
+                <label class="task"><input type="checkbox" data-task="6-3" checked><span>Persist the upload and job before enqueueing; return <code>202 Accepted</code> with a job ID and <code>Location</code> header.</span></label>
+                <label class="task"><input type="checkbox" data-task="6-4" checked><span>Implement status and result endpoints with the state machine <code>queued → running → succeeded|failed → expired</code>.</span></label>
+                <label class="task"><input type="checkbox" data-task="6-5" checked><span>Add migrations and repository/storage interfaces so PostgreSQL and local media storage do not leak into HTTP or model code.</span></label>
+                <label class="task"><input type="checkbox" data-task="6-6" checked><span>Test that accepted jobs and completed results survive independent API and worker restarts.</span></label>
               </div>
-              <div class="callout"><strong>Exit check:</strong> One <code>docker compose up --build</code> starts every local service; POST returns promptly with 202; polling reaches a terminal state; restarting the API does not lose the job or result.</div>
+              <div class="callout success"><strong>Exit check passed:</strong> One <code>docker compose up --build</code> starts every local service; POST returns promptly with 202; polling reaches a terminal state; restarting API and worker does not lose the result. Ruff, mypy, 68 fast tests, wheel packaging, and a real-model Compose M4A flow passed.</div>
             </div>
           </article>
 
@@ -666,7 +671,7 @@ curl --fail http://localhost:8000/health/ready
 curl --fail -F "file=@sample.mp3" -F "language=he" \
   http://localhost:8000/v1/transcriptions</code></pre>
           <p>The first run downloads approximately 500 MB of model files. Compose must mount a named cache volume so later starts reuse them.</p>
-          <div class="callout warning"><strong>After phase 6:</strong> The same Compose command will also start local Redis, PostgreSQL, and an independent worker. The POST example will return <code>202</code>; the reviewer will follow its <code>Location</code> header until the job succeeds, then request the result endpoint. Do not document those commands as working until the phase is implemented and smoke-tested.</div>
+          <div class="callout success"><strong>Phase 6 workflow:</strong> The Compose command starts local Redis, PostgreSQL, and an independent worker. POST returns <code>202</code>; follow its <code>Location</code> header until the job succeeds, then request the result endpoint.</div>
 
           <h3 style="margin-top:1.25rem">Developer path</h3>
           <pre><code>uv sync
@@ -680,7 +685,7 @@ make smoke SAMPLES="en=/absolute/path/to/sample.mp3"
 
         <section id="done">
           <h2>Definition of done</h2>
-          <p class="section-intro">The four groups below describe the implemented synchronous release. Phases 6–8 add the asynchronous acceptance criteria immediately after them; planned behavior must not be presented as current behavior.</p>
+          <p class="section-intro">The four groups below now cover the synchronous release and durable Phase 6 stack. Phases 7–8 add reliability and media behavior; planned behavior must not be presented as current behavior.</p>
           <div class="grid">
             <div class="note">
               <h3>Functional</h3>
@@ -719,12 +724,12 @@ make smoke SAMPLES="en=/absolute/path/to/sample.mp3"
               </ul>
             </div>
           </div>
-          <div class="callout warning"><strong>Phases 6–8 are done only when:</strong> accepted jobs survive API and worker restarts; duplicate submissions are idempotent; retries, hard deadlines, crash recovery, and retention are tested; the UI polls durable status; 16 kHz mono normalization and silent-input behavior are explicit; JSON, TXT, SRT, and VTT exports pass automated tests; and the full local Compose stack passes a clean-clone smoke test.</div>
+          <div class="callout warning"><strong>Phases 7–8 are done only when:</strong> duplicate submissions are idempotent; retries, hard deadlines, crash recovery, and retention are tested; 16 kHz mono normalization and silent-input behavior are explicit; JSON, TXT, SRT, and VTT exports pass automated tests; and the full local Compose stack passes a clean-clone smoke test. Phase 6 already proves durable jobs, UI polling, and restart survival.</div>
         </section>
 
         <section id="future">
           <h2>Approved local evolution and later scaling</h2>
-          <p class="section-intro">Phases 6–8 implement this flow locally. Managed object storage, cloud databases, Kubernetes, and GPU fleets remain later deployment choices rather than prerequisites.</p>
+          <p class="section-intro">Phase 6 implements this flow locally; phases 7–8 harden and expand it. Managed object storage, cloud databases, Kubernetes, and GPU fleets remain later deployment choices rather than prerequisites.</p>
           <div class="architecture" role="img" aria-label="Client uploads media through an API to a local volume, a local Redis queue sends a job to an inference worker, and status and results are stored in local PostgreSQL.">
             <div class="node"><strong>API</strong><span>202 + job ID</span></div>
             <div class="arrow" aria-hidden="true">→</div>
@@ -735,11 +740,11 @@ make smoke SAMPLES="en=/absolute/path/to/sample.mp3"
             <div class="node"><strong>Worker</strong><span>CPU default · GPU configurable</span></div>
           </div>
           <div class="branch">
-            <div class="node future"><strong>Local PostgreSQL</strong><span>job state + results</span></div>
+            <div class="node"><strong>Local PostgreSQL</strong><span>job state + results</span></div>
             <div class="node future"><strong>Rate limits</strong><span>local abuse control</span></div>
             <div class="node future"><strong>Cleanup worker</strong><span>expire media/results</span></div>
           </div>
-          <p style="margin-top:1rem">The public flow becomes <code>POST → 202</code>, <code>GET /v1/transcriptions/{id}</code>, and <code>GET /v1/transcriptions/{id}/result</code>. The current <code>Transcriber</code> boundary remains reusable inside the worker. Later, the <code>MediaStore</code> can target S3-compatible storage and workers can scale per GPU without changing the HTTP contract.</p>
+          <p style="margin-top:1rem">The public asynchronous flow is <code>POST → 202</code>, <code>GET /v1/transcriptions/{id}</code>, and <code>GET /v1/transcriptions/{id}/result</code>. The <code>Transcriber</code> boundary is reused inside the worker. Later, the <code>MediaStore</code> can target S3-compatible storage and workers can scale per GPU without changing the HTTP contract.</p>
         </section>
 
         <p class="footer">This document is the implementation source of truth. If the implementation diverges, update the decision and rationale here and in the README.</p>

@@ -33,6 +33,7 @@ def test_static_assets_are_served_same_origin(client: TestClient) -> None:
     assert script.status_code == 200
     assert script.headers["content-type"].startswith("text/javascript")
     assert "formData" in script.text
+    assert "waitForJob" in script.text
     assert "navigator.clipboard.writeText" in script.text
     assert "URL.createObjectURL" in script.text
 
@@ -46,6 +47,7 @@ def test_browser_configuration_follows_custom_api_prefix(settings: Settings) -> 
         assert config == {
             "transcription_url": "/api/v2/transcriptions",
             "max_upload_bytes": settings.max_upload_bytes,
+            "async_jobs_enabled": False,
         }
         response = client.post(
             config["transcription_url"],

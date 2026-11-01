@@ -1,6 +1,7 @@
 """Typed application configuration loaded from environment variables."""
 
 from functools import lru_cache
+from pathlib import Path
 from typing import Literal
 
 from pydantic import Field
@@ -42,6 +43,12 @@ class Settings(BaseSettings):
     max_media_duration_seconds: float = Field(default=15 * 60, gt=0)
     max_concurrent_transcriptions: int = Field(default=1, gt=0)
     inference_queue_timeout_seconds: float = Field(default=5, gt=0)
+
+    async_jobs_enabled: bool = False
+    database_url: str = "postgresql://transcription:transcription@postgres:5432/transcription"
+    redis_url: str = "redis://redis:6379/0"
+    redis_queue_name: str = "transcription:jobs"
+    media_storage_path: Path = Path("/data/media")
 
 
 @lru_cache(maxsize=1)

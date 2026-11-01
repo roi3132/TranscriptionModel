@@ -14,6 +14,11 @@ from starlette.middleware.base import RequestResponseEndpoint
 
 from transcription_service import __version__
 from transcription_service.adapters.faster_whisper import FasterWhisperTranscriber
+from transcription_service.adapters.jobs import (
+    LocalMediaStore,
+    PostgresJobRepository,
+    RedisJobBroker,
+)
 from transcription_service.adapters.media import PyAvMediaInspector
 from transcription_service.api.health import router as health_router
 from transcription_service.api.transcriptions import router as transcription_router
@@ -24,6 +29,8 @@ from transcription_service.core.errors import register_exception_handlers
 from transcription_service.core.logging import configure_logging
 from transcription_service.core.status import RuntimeStatus
 from transcription_service.domain import MediaInspector, TranscriberFactory
+from transcription_service.jobs.domain import JobBroker, JobRepository, MediaStore
+from transcription_service.services.jobs import JobSubmissionService
 from transcription_service.services.transcription import TranscriptionService
 
 logger = structlog.get_logger(__name__)
@@ -45,6 +52,9 @@ def create_app(
     *,
     transcriber_factory: TranscriberFactory = _default_transcriber_factory,
     media_inspector: MediaInspector | None = None,
+    job_repository: JobRepository | None = None,
+    job_broker: JobBroker | None = None,
+    media_store: MediaStore | None = None,
 ) -> FastAPI:
     """Build an application instance with explicit, testable dependencies."""
 
@@ -63,29 +73,55 @@ def create_app(
             version=__version__,
         )
         try:
-            try:
-                transcriber = await anyio.to_thread.run_sync(
-                    transcriber_factory,
-                    resolved_settings,
+            if resolved_settings.async_jobs_enabled:
+                repository = job_repository or PostgresJobRepository(resolved_settings.database_url)
+                broker = job_broker or RedisJobBroker(
+                    resolved_settings.redis_url, resolved_settings.redis_queue_name
                 )
-                lifespan_app.state.transcription_service = TranscriptionService(
-                    transcriber,
-                    resolved_media_inspector,
-                    resolved_settings,
-                    transcriber_factory=transcriber_factory,
-                )
-                runtime_status.mark_ready()
-                await logger.ainfo("transcription_model_ready", model=transcriber.model_id)
-            except Exception as exc:
-                runtime_status.mark_unavailable(type(exc).__name__)
-                await logger.aexception(
-                    "transcription_model_initialization_failed",
-                    exception_type=type(exc).__name__,
-                )
+                storage = media_store or LocalMediaStore(resolved_settings.media_storage_path)
+                try:
+                    await anyio.to_thread.run_sync(repository.migrate)
+                    await anyio.to_thread.run_sync(repository.ping)
+                    await anyio.to_thread.run_sync(broker.ping)
+                    lifespan_app.state.job_service = JobSubmissionService(
+                        repository, broker, storage
+                    )
+                    runtime_status.mark_ready()
+                    await logger.ainfo("job_api_ready")
+                except Exception as exc:
+                    runtime_status.mark_unavailable(type(exc).__name__)
+                    await logger.aexception(
+                        "job_infrastructure_initialization_failed",
+                        exception_type=type(exc).__name__,
+                    )
+            else:
+                try:
+                    transcriber = await anyio.to_thread.run_sync(
+                        transcriber_factory,
+                        resolved_settings,
+                    )
+                    lifespan_app.state.transcription_service = TranscriptionService(
+                        transcriber,
+                        resolved_media_inspector,
+                        resolved_settings,
+                        transcriber_factory=transcriber_factory,
+                    )
+                    runtime_status.mark_ready()
+                    await logger.ainfo("transcription_model_ready", model=transcriber.model_id)
+                except Exception as exc:
+                    runtime_status.mark_unavailable(type(exc).__name__)
+                    await logger.aexception(
+                        "transcription_model_initialization_failed",
+                        exception_type=type(exc).__name__,
+                    )
             yield
         finally:
             runtime_status.mark_unavailable()
             lifespan_app.state.transcription_service = None
+            service: JobSubmissionService | None = lifespan_app.state.job_service
+            if service is not None:
+                await anyio.to_thread.run_sync(service.broker.close)
+            lifespan_app.state.job_service = None
             await logger.ainfo("application_stopped")
 
     application = FastAPI(
@@ -97,6 +133,7 @@ def create_app(
     application.state.settings = resolved_settings
     application.state.runtime_status = runtime_status
     application.state.transcription_service = None
+    application.state.job_service = None
     application.state.upload_slots = anyio.CapacityLimiter(resolved_settings.max_concurrent_uploads)
 
     register_exception_handlers(application)
