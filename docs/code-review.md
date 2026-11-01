@@ -5,6 +5,23 @@ pinned Hugging Face revisions, the two model profiles, and the decision to omit 
 appropriate for the assignment. The useful changes are at resource and ownership boundaries, not
 additional infrastructure.
 
+## Approved next roadmap — not yet implemented
+
+The interview scope has expanded since this review. The current findings below still describe the
+implemented synchronous service; they must not be read as claims that durable jobs already exist.
+The next work is recorded as phases 6–8 in `docs/architecture-plan.html` and in the README:
+
+1. Run the API, Redis broker, PostgreSQL job store, media volume, and independent inference worker
+   locally through Docker Compose; return `202` and expose job status and result endpoints.
+2. Add retries, hard worker deadlines, idempotency/hash deduplication, crash recovery, retention,
+   cleanup, and component-specific readiness.
+3. Add explicit 16 kHz mono normalization, defined silent-input behavior, TXT/SRT/VTT exports, rate
+   limiting, long-file chunking, and asynchronous UI polling.
+
+Managed cloud services are not required. Redis and PostgreSQL will be self-hosted containers, and
+the first `MediaStore` implementation will use a named local volume. S3-compatible storage and
+multi-host scaling remain later deployment options.
+
 ## Findings fixed
 
 | Priority | Finding | Resolution and regression evidence |

@@ -3,8 +3,9 @@
 A production-minded FastAPI service that accepts an audio or video file and returns a timestamped
 transcription produced by an open multilingual Whisper model from Hugging Face.
 
-The service currently supports the complete audio and video-container workflow, including a browser
-upload interface and Docker Compose packaging. See
+The service currently supports the complete synchronous audio and video-container workflow,
+including a browser upload interface and Docker Compose packaging. A three-phase local asynchronous
+job roadmap is approved but not yet implemented. See
 [`docs/architecture-plan.html`](docs/architecture-plan.html) for the ordered implementation plan.
 
 ## Current capabilities
@@ -314,7 +315,9 @@ The service is intentionally stateless: uploaded media is closed after the reque
 media nor transcript is retained. This also makes horizontal replication straightforward.
 
 A database becomes appropriate when the product adds durable asynchronous jobs, user-owned history,
-or retention. That evolution is described below.
+or retention. Durable jobs are now the approved next scope, so the next implementation will add a
+local PostgreSQL service for job state and results. This does not change the current runtime: until
+the roadmap below is implemented, requests remain synchronous and no media or transcript is retained.
 
 ### Synchronous, bounded requests
 
@@ -330,18 +333,22 @@ limit is also checked after parsing. Parser errors and early rejections close pa
 If increasing file size or admission concurrency, also increase Compose's 256 MiB temporary
 filesystem appropriately. These limits are per process, not shared across replicas.
 
-For longer recordings or production traffic, the API should evolve to:
+For longer recordings or production traffic, the approved local architecture is:
 
 ```text
-POST upload → object storage → durable queue → inference worker
-       │                                      │
-       └── 202 + job ID          PostgreSQL result/status
+POST upload → local media volume → local Redis queue → inference worker
+       │                                                 │
+       └── 202 + job ID                    PostgreSQL result/status
 
 GET /v1/transcriptions/{job_id}
+GET /v1/transcriptions/{job_id}/result
 ```
 
-That design justifies object storage, a durable queue, and PostgreSQL together. An in-process
-background task was rejected because a process restart would lose accepted work.
+Every component will run through Docker Compose on the reviewer's machine. Redis is self-hosted in a
+container and requires no managed service or subscription. Uploaded media will initially live on a
+named Docker volume behind a `MediaStore` interface; S3-compatible storage remains a deployment
+option, not a local requirement. An in-process background task remains rejected because a process
+restart would lose accepted work.
 
 ### One inference at a time by default
 
@@ -469,8 +476,60 @@ Wheel packaging relies on Hatch's normal package discovery for static files. The
 duplicate `force-include` rule that broke wheel builds despite passing editable-install tests; that
 rule was removed and CI now also runs `make package`.
 
+## Approved next implementation: three phases
+
+The items in this section are planned work, not current capabilities. The goal is to meet the
+backend-interview requirement for durable asynchronous jobs while keeping the complete development
+and review environment local and reproducible with one Docker Compose command.
+
+### Phase 1 — Local durable asynchronous jobs
+
+- Split the Compose deployment into `api` and `worker` services while reusing the existing media,
+  model-registry, and `Transcriber` boundaries.
+- Add local Redis as the job broker, local PostgreSQL for durable job state and result metadata, and
+  named volumes for PostgreSQL, Redis persistence, uploaded media, and the Hugging Face cache.
+- Save an accepted upload before enqueueing it, create the job record transactionally, and return
+  `202 Accepted` with a job ID and `Location` header.
+- Add `GET /v1/transcriptions/{job_id}` for status and
+  `GET /v1/transcriptions/{job_id}/result` for completed results.
+- Use an explicit state machine: `queued`, `running`, `succeeded`, `failed`, and `expired`. Do not
+  describe a worker thread in the API process as an asynchronous job worker.
+- Add integration tests that restart the API independently of the worker and prove accepted work and
+  completed results survive process restarts.
+
+### Phase 2 — Reliable job execution and lifecycle
+
+- Add bounded retries with attempt counts, backoff, stable failure codes, and a dead-letter or
+  terminal-failure policy.
+- Enforce hard execution deadlines through worker-process isolation; an asyncio timeout alone cannot
+  safely stop native decoding or inference.
+- Support an idempotency key and a SHA-256 upload hash so repeated submissions do not create duplicate
+  work. Reuse successful results only when the model revision and transcription options also match.
+- Define configurable retention for source media, jobs, and results, plus a cleanup worker that marks
+  expired jobs before deleting their artifacts.
+- Make job claiming atomic, recover jobs abandoned by a crashed worker, and expose queue/worker
+  readiness without requiring the model to run during a health probe.
+
+### Phase 3 — Close the remaining interview-scope gaps
+
+- Add an explicit media-normalization adapter that produces and tests 16 kHz mono audio before
+  inference instead of relying only on faster-whisper's internal preprocessing.
+- Define silent-input behavior in the public contract and tests. Silence should produce a deliberate
+  `no_speech_detected` result or warning rather than an accidental empty response.
+- Add JSON, TXT, SRT, and VTT result rendering from the same timestamped segment model.
+- Add local rate limiting and document where a reverse proxy or API-key layer would enforce quotas in
+  a public deployment.
+- Add application-level chunking for long recordings only after the durable job pipeline works, so
+  chunks can be retried and assembled without keeping an HTTP request open.
+
+Deferred beyond these phases: diarization, translation, LLM summaries, transcript editing, billing,
+PII redaction, URL ingestion, completion webhooks, managed object storage, Kubernetes, and Prometheus
+metrics. These remain useful scaling or product discussions, not prerequisites for the next build.
+
 ## Current limitations and next steps
 
+- Durable jobs, Redis, PostgreSQL, the independent worker, and status/result endpoints described
+  above are not implemented yet.
 - Only the first audio stream in a video container is transcribed; the API does not yet expose audio
   track selection.
 - There is no authentication or rate limiting. Do not expose this service directly to an untrusted
