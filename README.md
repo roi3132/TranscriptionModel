@@ -4,7 +4,7 @@ A production-minded FastAPI service that accepts an audio or video file and retu
 transcription produced by an open multilingual Whisper model from Hugging Face.
 
 The service currently supports the complete audio and video-container workflow, including a browser
-upload interface. Docker packaging and CI are the next planned phases. See
+upload interface and Docker Compose packaging. See
 [`docs/architecture-plan.html`](docs/architecture-plan.html) for the ordered implementation plan.
 
 ## Current capabilities
@@ -53,16 +53,41 @@ inspection and inference run in worker threads rather than on the asynchronous H
 
 ## Run locally
 
-### Requirements
+### Docker Compose
 
-- Python 3.12
-- [`uv`](https://docs.astral.sh/uv/)
-- Internet access on the first model run
-
-Install the locked runtime and development dependencies:
+Prerequisite: Docker Desktop with the Compose plugin (or Docker Engine and Compose v2). From the
+repository root, start the CPU-first service:
 
 ```bash
-uv sync --all-groups
+docker compose up --build
+```
+
+On first startup, the container downloads the pinned model (about 500 MB) into a named Docker
+volume. The download is separate from the application image and is reused on later starts. Once the
+model is ready, open <http://localhost:8000/>. Stop the foreground service with `Ctrl+C`; the model
+cache remains available. To run detached instead, use `docker compose up --build -d`, follow logs
+with `docker compose logs -f app`, and stop with `docker compose down`.
+
+The container runs as a non-root user with a read-only root filesystem, a bounded temporary
+filesystem for request processing, and only the model cache mounted persistently. The port is bound
+to `127.0.0.1`, so the service is not exposed to other machines by default. Compose reads optional
+overrides from `.env`; start from `cp .env.example .env` if you want to customize the model or
+limits. `docker compose down` preserves the model cache. `docker compose down --volumes` removes
+that cache too and should only be used when you intentionally want to download the weights again.
+
+Run the full container readiness and browser-page smoke check with `make docker-smoke`. It builds
+and starts the Compose service, waits up to 15 minutes for model readiness, checks the browser page,
+and leaves the service running. `make docker-down` stops it without deleting the model cache.
+
+### Native Python
+
+Requirements: Python 3.12, [`uv`](https://docs.astral.sh/uv/), and internet access on the first
+model run.
+
+Install the locked runtime and development dependencies (or run `make setup`):
+
+```bash
+uv sync --frozen --all-groups
 ```
 
 Optionally create local configuration:
@@ -71,10 +96,10 @@ Optionally create local configuration:
 cp .env.example .env
 ```
 
-Run the API:
+Run the API (or run `make run`):
 
 ```bash
-uv run uvicorn transcription_service.main:app --reload
+uv run --frozen uvicorn transcription_service.main:app --reload
 ```
 
 Open <http://localhost:8000/> for the browser interface. Choose an audio or video file, select
@@ -84,9 +109,10 @@ directly at <http://localhost:8000/docs> or with the `curl` example below.
 
 The first startup downloads approximately 500 MB of model files into the Hugging Face user cache
 (normally `~/.cache/huggingface/hub`), which is outside this repository. Later runs reuse the cached
-model. The local `.venv/`, `.uv-cache/`, `.cache/`, `models/`, `uploads/`, and `.env` paths are also
-excluded by `.gitignore`, so dependencies, model weights, uploaded media, and local configuration are
-not committed.
+model. The local `.venv/`, `.uv-cache/`, `.cache/`, `models/`, `uploads/`, `.env`, and supported
+audio/video files are excluded by `.gitignore`, so dependencies, model weights, uploaded media, and
+local configuration are not committed. `.dockerignore` applies the same media/cache exclusions to
+the build context.
 
 You can verify this at any time with `git status --short --ignored`. Ignored generated files appear
 with `!!`; they must not appear as staged or tracked files.
@@ -131,25 +157,30 @@ Example response:
 
 ## Test and quality checks
 
-The normal suite injects a fake transcriber and therefore does not download model weights:
+The normal suite injects a fake transcriber and therefore does not download model weights. From a
+clean clone, `make check test` runs the lockfile check, Ruff formatting and lint, mypy, and pytest.
+The equivalent individual commands are:
 
 ```bash
-uv run ruff format --check .
-uv run ruff check .
-uv run mypy src
-uv run pytest --cov=transcription_service --cov-report=term-missing
+uv run --frozen ruff format --check .
+uv run --frozen ruff check .
+uv run --frozen mypy src
+uv run --frozen pytest --cov=transcription_service --cov-report=term-missing
 ```
 
 Run an explicit real-model smoke test against one or more local samples:
 
 ```bash
-uv run python scripts/smoke_media.py \
+uv run --frozen python scripts/smoke_media.py \
   en=/absolute/path/to/english.wav \
   he=/absolute/path/to/hebrew.m4a \
   en=/absolute/path/to/video.mp4
 ```
 
 For a song or music-heavy recording, add `--audio-mode music`.
+
+The equivalent Make target accepts one or more language/path samples, for example
+`make smoke SAMPLES="en=/path/to/english.wav he=/path/to/hebrew.m4a" AUDIO_MODE=music`.
 
 The smoke test loads the configured Hugging Face model, waits for readiness, and sends every sample
 through the public HTTP endpoint. It is deliberately excluded from normal CI because it downloads
@@ -347,17 +378,43 @@ This intentionally small interface is appropriate for the assignment's one-reque
 larger product with navigation, authentication, durable job history, or multiple frontend teams
 could justify a separately deployed frontend and its added build and deployment pipeline.
 
+### CPU-first container and persistent model cache
+
+The Docker image installs the exact locked Python environment, runs the API as an unprivileged user,
+and keeps model weights out of the image. Compose stores only the Hugging Face cache in a named
+volume; uploaded media is handled in bounded temporary storage and is not written to that volume.
+The container uses one Uvicorn worker so the model is loaded once and the in-process inference
+semaphore remains meaningful. The port binds to localhost, and the container drops Linux
+capabilities and has a read-only root filesystem.
+
+This keeps rebuilds smaller than baking roughly 500 MB of weights into every image and keeps local
+startup convenient on CPU-only machines. Alternatives include baking model weights into an image
+for an offline deployment, or using a bind mount for a host-managed cache; those choices trade
+larger image distribution or host-specific permissions for their respective operational benefits.
+For multiple production replicas, the model cache can be independently warmed per instance; neither
+media nor transcripts should be added to persistent storage without an explicit retention and
+authorization requirement.
+
+The base image is pinned to the maintained Python 3.12 Bookworm line rather than an immutable
+digest, so rebuilding can pick up upstream security fixes. A release deployment that requires
+bit-for-bit image reproducibility should pin the base image digest and update it through a deliberate
+security-update process.
+
+GitHub Actions runs the same locked Ruff, mypy, and fake-transcriber pytest checks as local
+development. It does not download model weights or handle secrets. Third-party workflow actions are
+pinned to commit SHAs to make the CI toolchain changes explicit and reviewable.
+
 ## Current limitations and next steps
 
 - Only the first audio stream in a video container is transcribed; the API does not yet expose audio
   track selection.
-- Docker and GitHub Actions are not implemented yet. Until that phase, the truthful supported run
-  path is the native `uv` workflow above.
 - There is no authentication or rate limiting. Do not expose this service directly to an untrusted
   public network in its current form.
 - Automatic language detection and Hebrew/English code-switching are model-dependent and may be
   less accurate than selecting the dominant language explicitly.
 - Music mode processes the full audio track and is therefore slower than speech mode.
+- Docker uses CPU inference and a single worker. A production GPU or multi-replica deployment needs
+  deployment-specific resource allocation, scaling, and model-cache warming.
 
 ## Updating this decision record
 

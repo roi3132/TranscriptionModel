@@ -533,11 +533,11 @@
               <h3>Packaging, CI, and documentation</h3>
               <div class="phase-meta">Estimated 5 hours · Reviewer-ready delivery</div>
               <div class="tasks">
-                <label class="task"><input type="checkbox" data-task="4-1"><span>Create a non-root, CPU-first Docker image and Compose service with a persistent Hugging Face cache volume.</span></label>
-                <label class="task"><input type="checkbox" data-task="4-2"><span>Add Make targets for setup, run, check, test, real-model smoke test, and Docker smoke test.</span></label>
-                <label class="task"><input type="checkbox" data-task="4-3"><span>Add GitHub Actions for lint, formatting, typing, and fast tests; do not download model weights in normal CI.</span></label>
-                <label class="task"><input type="checkbox" data-task="4-4"><span>Write README quickstart, curl examples, configuration table, architecture, limits, assumptions, privacy behavior, and trade-offs.</span></label>
-                <label class="task"><input type="checkbox" data-task="4-5"><span>Document the asynchronous production evolution and why the take-home version intentionally has no database.</span></label>
+                <label class="task"><input type="checkbox" data-task="4-1" checked><span>Create a non-root, CPU-first Docker image and Compose service with a persistent Hugging Face cache volume.</span></label>
+                <label class="task"><input type="checkbox" data-task="4-2" checked><span>Add Make targets for setup, run, check, test, real-model smoke test, and Docker smoke test.</span></label>
+                <label class="task"><input type="checkbox" data-task="4-3" checked><span>Add GitHub Actions for lint, formatting, typing, and fast tests; do not download model weights in normal CI.</span></label>
+                <label class="task"><input type="checkbox" data-task="4-4" checked><span>Write README quickstart, curl examples, configuration table, architecture, limits, assumptions, privacy behavior, and trade-offs.</span></label>
+                <label class="task"><input type="checkbox" data-task="4-5" checked><span>Document the asynchronous production evolution and why the take-home version intentionally has no database.</span></label>
               </div>
               <div class="callout"><strong>Exit check:</strong> A clean clone succeeds using only the README and <code>docker compose up --build</code>.</div>
             </div>
@@ -687,7 +687,7 @@ make smoke        # health + end-to-end request against running service</code></
 
   <script>
     (() => {
-      const storageKey = "transcription-architecture-plan-progress-v3";
+      const storageKey = "transcription-architecture-plan-progress-v4";
       const tasks = Array.from(document.querySelectorAll("input[data-task]"));
       const progressBar = document.getElementById("progress-bar");
       const progressLabel = document.getElementById("progress-label");

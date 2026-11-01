@@ -1,0 +1,33 @@
+services:
+  app:
+    build: .
+    image: transcription-service:local
+    init: true
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      TRANSCRIPTION_ENVIRONMENT: production
+      TRANSCRIPTION_LOG_LEVEL: ${TRANSCRIPTION_LOG_LEVEL:-INFO}
+      TRANSCRIPTION_MODEL_ID: ${TRANSCRIPTION_MODEL_ID:-Systran/faster-whisper-small}
+      TRANSCRIPTION_MODEL_REVISION: ${TRANSCRIPTION_MODEL_REVISION:-536b0662742c02347bc0e980a01041f333bce120}
+      TRANSCRIPTION_DEVICE: ${TRANSCRIPTION_DEVICE:-cpu}
+      TRANSCRIPTION_COMPUTE_TYPE: ${TRANSCRIPTION_COMPUTE_TYPE:-int8}
+      TRANSCRIPTION_BEAM_SIZE: ${TRANSCRIPTION_BEAM_SIZE:-5}
+      TRANSCRIPTION_MAX_UPLOAD_BYTES: ${TRANSCRIPTION_MAX_UPLOAD_BYTES:-104857600}
+      TRANSCRIPTION_MAX_MEDIA_DURATION_SECONDS: ${TRANSCRIPTION_MAX_MEDIA_DURATION_SECONDS:-900}
+      TRANSCRIPTION_MAX_CONCURRENT_TRANSCRIPTIONS: ${TRANSCRIPTION_MAX_CONCURRENT_TRANSCRIPTIONS:-1}
+      TRANSCRIPTION_INFERENCE_QUEUE_TIMEOUT_SECONDS: ${TRANSCRIPTION_INFERENCE_QUEUE_TIMEOUT_SECONDS:-5}
+      HF_HOME: /home/transcriber/.cache/huggingface
+      TMPDIR: /tmp
+    volumes:
+      - model_cache:/home/transcriber/.cache/huggingface
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=256m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  model_cache:

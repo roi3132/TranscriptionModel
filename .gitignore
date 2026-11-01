@@ -22,3 +22,16 @@ htmlcov/
 .cache/
 models/
 uploads/
+
+# User-provided media; integration fixtures are generated in memory.
+*.wav
+*.mp3
+*.m4a
+*.aac
+*.flac
+*.ogg
+*.opus
+*.mp4
+*.mov
+*.webm
+*.mkv
