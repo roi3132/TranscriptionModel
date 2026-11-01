@@ -105,10 +105,10 @@
           <div class="model-field">
             <label class="field-label" for="model-profile">Transcription model</label>
             <select class="select-control" id="model-profile" name="model_profile" aria-describedby="model-help">
-              <option value="faster">Faster · small model</option>
-              <option value="larger">Larger model · large-v3</option>
+              <option value="faster">Fast · Whisper Small</option>
+              <option value="larger">Advanced · Whisper Large v3</option>
             </select>
-            <p class="model-help" id="model-help">The larger model takes longer and may download on first use. Better accuracy is not guaranteed, especially for songs.</p>
+            <p class="model-help" id="model-help">Advanced takes longer and downloads several GB on first use. Better accuracy is not guaranteed, especially for songs.</p>
           </div>
 
           <p class="error-message" id="form-error" role="alert" hidden></p>
@@ -141,7 +141,17 @@
             <div>
               <p class="loading-title">Listening closely…</p>
               <p class="loading-copy">Longer recordings can take a little while.</p>
+              <p class="loading-copy" id="elapsed-time" aria-live="off"></p>
             </div>
+          </div>
+
+          <div class="playback-section" id="playback-section" hidden>
+            <video id="media-player" controls preload="metadata" aria-label="Original recording" hidden></video>
+            <p class="model-help" id="playback-help">Playback uses your local file. Click a timestamp to jump to that segment.</p>
+            <label class="text-button playback-attach" for="playback-file">
+              Choose the original recording for playback
+              <input class="visually-hidden" id="playback-file" type="file" accept="audio/*,video/*,.aac,.flac,.m4a,.mkv,.mov,.mp3,.mp4,.ogg,.opus,.wav,.webm">
+            </label>
           </div>
 
           <div class="transcript-content" id="transcript-content" hidden>

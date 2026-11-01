@@ -1,0 +1,73 @@
+{
+  "samples": [
+    {
+      "sample": "english.wav",
+      "media_sha256": "95d6f40456c045b6438682c3a875e289dac1e16c38f51601b6c3eb93604346fd",
+      "requested_language": "en",
+      "audio_mode": "speech",
+      "model_profile": "faster",
+      "wall_time_seconds": 6.162,
+      "result": {
+        "text": "This is a short recording for the transcription service. Please bring the blue notebook to our meeting tomorrow morning.",
+        "language": "en",
+        "language_probability": 1.0,
+        "duration_seconds": 6.6835625,
+        "processing_time_seconds": 2.159816375999071,
+        "model": "Systran/faster-whisper-small",
+        "segments": [
+          {
+            "start": 0.0,
+            "end": 3.46,
+            "text": "This is a short recording for the transcription service."
+          },
+          {
+            "start": 3.46,
+            "end": 4.98,
+            "text": "Please bring the blue notebook"
+          },
+          {
+            "start": 4.98,
+            "end": 6.6835625,
+            "text": "to our meeting tomorrow morning."
+          }
+        ],
+        "warnings": [],
+        "job_id": "0d4827c0-7965-4625-be50-6cd135084789"
+      },
+      "reference": "This is a short recording for the transcription service. Please bring the blue notebook to our meeting tomorrow morning.\n",
+      "word_errors": 0,
+      "reference_word_count": 19,
+      "word_error_rate": 0.0
+    },
+    {
+      "sample": "hebrew.wav",
+      "media_sha256": "c069916b3069b09f55cfc50f37bbcd49710ffd3db757f1f8a0ca1e1a91b59e70",
+      "requested_language": "he",
+      "audio_mode": "speech",
+      "model_profile": "faster",
+      "wall_time_seconds": 6.143,
+      "result": {
+        "text": "שלום לכולם, זו הכלטה קצרה לבדיקת שירות התמלול, מחר בבוקר ניפגש ליד הספרייה ונסתה קפה ביחד",
+        "language": "he",
+        "language_probability": 1.0,
+        "duration_seconds": 8.10925,
+        "processing_time_seconds": 2.7994468769993546,
+        "model": "Systran/faster-whisper-small",
+        "segments": [
+          {
+            "start": 0.0,
+            "end": 8.10925,
+            "text": "שלום לכולם, זו הכלטה קצרה לבדיקת שירות התמלול, מחר בבוקר ניפגש ליד הספרייה ונסתה קפה ביחד"
+          }
+        ],
+        "warnings": [],
+        "job_id": "3d3d86c3-7520-480c-a68e-67c2ac022583"
+      },
+      "reference": "שלום לכולם. זו הקלטה קצרה לבדיקת שירות התמלול. מחר בבוקר ניפגש ליד הספרייה ונשתה קפה ביחד.\n",
+      "word_errors": 2,
+      "reference_word_count": 16,
+      "word_error_rate": 0.125
+    }
+  ],
+  "word_error_rate": 0.05714285714285714
+}

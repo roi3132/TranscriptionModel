@@ -36,6 +36,7 @@ packages = ["src/transcription_service"]
 [tool.pytest.ini_options]
 addopts = "--strict-config --strict-markers -ra"
 testpaths = ["tests"]
+markers = ["infrastructure: requires TEST_DATABASE_URL and TEST_REDIS_URL"]
 
 [tool.coverage.run]
 branch = true

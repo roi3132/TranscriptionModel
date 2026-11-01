@@ -205,8 +205,8 @@ omissions, with the practical effect and follow-up recorded here.
 | One child per supervisor; no warm model pool | Jobs queue under load and each attempt reloads model state. | Benchmark capacity and introduce warming/scaling while retaining cancellation and isolation. |
 | Whole bounded PCM buffer and non-overlapping chunks | RAM grows with allowed duration; chunk boundaries can lose context. | Stream or durably materialize chunks; evaluate overlap/context reconciliation. |
 | First audio track only | Alternate-language or commentary tracks cannot be selected. | Define an audio-track API/UI and test multi-track containers. |
-| No accuracy benchmark or human correction workflow | Passing tests proves behavior, not transcription quality. | Define a labeled corpus, error metrics, hardware baseline, and acceptance threshold. |
-| Fake infrastructure in normal API tests | Fast tests do not exercise real SQL, Redis persistence, image behavior, or native inference. | Run the documented Compose and real-model checks for release acceptance; add infrastructure CI if required. |
+| Small synthetic accuracy evaluation; no representative human corpus or correction workflow | The two reference-scored clips demonstrate the measurement process, not general transcription quality. | Add representative human recordings, recording conditions, and an acceptance threshold. |
+| Deterministic inference in API and infrastructure tests | CI tests real SQL/Redis adapters and container startup but does not run native model inference. | Run the documented real-model checks for release acceptance. |
 | No account history, job cancellation, or push completion | Browser recovery covers one active job; clients poll and work runs to completion/deadline. | Define lifecycle/ownership semantics before adding these features. |
 | Retained job tombstones; no backup automation | Metadata can grow over time; host/volume loss is outside the recovery guarantee. | Define archival, deletion, backup, and restore policy. |
 | No metrics backend, autoscaling, or orchestrator | Operators use health endpoints and structured logs for this local stack. | Add service-level metrics and deployment automation when operating beyond one host. |
@@ -219,14 +219,24 @@ focus on file upload, asynchronous reliability, normalization, inference, and re
 
 The fast suite substitutes deterministic inference and in-memory job adapters while exercising
 request validation, real PyAV normalization in media tests, lifecycle policy, exports, and security
-boundaries. The latest local run passed 78 tests with 78% coverage. Coverage is a code-execution
+boundaries. Real PostgreSQL/Redis tests also run in CI and can be enabled locally with the
+documented disposable test stack. Coverage is a code-execution
 metric, not an accuracy score or a complete integration guarantee.
 
 The standalone sandbox probe, container readiness smoke, and opt-in real-model script cover
 different gaps. Container readiness checks the API, database, broker, and worker heartbeat; it
 does not guarantee that model download/loading or a transcription will succeed. Real-model
-smoke output requires human inspection and does not compare against a reference transcript.
+smoke output can be compared with UTF-8 reference transcripts using word error rate.
+The [small accuracy evaluation](evaluation/README.md) records actual English/Hebrew results and
+the limits of testing two synthetic clips.
 See [Execution Instructions](execution-instructions.md#test-the-solution) for each command.
+
+Browser playback uses a local object URL, so the service does not retain extra media for listening.
+The URL is released when another job/file replaces it. Reloading recovers the active job but
+requires reselecting the original file for playback. The user is responsible for selecting the
+matching recording, and browser codec support can differ from server decoder support. Displayed
+elapsed time and attempts come from the browser clock and job status; there is no invented
+percentage or completion estimate.
 
 The pinned dependency set uses `faster-whisper==1.2.1` with PyAV 18.1.0. The former passes
 `metadata_errors` to `av.open`, an argument removed in PyAV 19. The project therefore bounds PyAV

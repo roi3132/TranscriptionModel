@@ -16,12 +16,22 @@ const segmentList = document.querySelector("#segment-list");
 const segmentsSection = document.querySelector("#segments-section");
 const resultMeta = document.querySelector("#result-meta");
 const copyFeedback = document.querySelector("#copy-feedback");
+const mediaPlayer = document.querySelector("#media-player");
+const playbackSection = document.querySelector("#playback-section");
+const playbackHelp = document.querySelector("#playback-help");
+const playbackFile = document.querySelector("#playback-file");
+const loadingTitle = document.querySelector(".loading-title");
+const loadingCopy = document.querySelector(".loading-copy");
+const elapsedTime = document.querySelector("#elapsed-time");
 
 let latestTranscript = "";
 let latestResultUrl = "";
 let selectedFilename = "transcript";
 let isTranscribing = false;
 let clientConfig;
+let playbackUrl = "";
+let progressTimer;
+let activeModelProfile = "faster";
 const pendingJobStorageKey = "transcription-studio.pending-job";
 
 async function getClientConfig() {
@@ -70,6 +80,76 @@ function resetResult() {
   segmentsSection.hidden = true;
   latestTranscript = "";
   latestResultUrl = "";
+  playbackSection.hidden = true;
+  clearPlayback();
+}
+
+function clearPlayback() {
+  mediaPlayer.pause();
+  mediaPlayer.removeAttribute("src");
+  mediaPlayer.load();
+  mediaPlayer.hidden = true;
+  if (playbackUrl) URL.revokeObjectURL(playbackUrl);
+  playbackUrl = "";
+  playbackFile.value = "";
+}
+
+function attachPlayback(file) {
+  clearPlayback();
+  playbackUrl = URL.createObjectURL(file);
+  mediaPlayer.classList.toggle("is-audio", !/\.(mp4|mov|webm|mkv)$/i.test(file.name));
+  mediaPlayer.src = playbackUrl;
+  mediaPlayer.hidden = false;
+  playbackHelp.textContent = "Playback uses your local file. Click a timestamp to jump to that segment.";
+  updatePlayback();
+}
+
+function updatePlayback() {
+  const ready = Boolean(playbackUrl) && mediaPlayer.readyState >= 1 && !mediaPlayer.error;
+  for (const item of segmentList.children) {
+    item.querySelector("button").disabled = !ready;
+    const active = ready && mediaPlayer.currentTime >= Number(item.dataset.start)
+      && mediaPlayer.currentTime < Number(item.dataset.end);
+    if (active) item.setAttribute("aria-current", "true");
+    else item.removeAttribute("aria-current");
+  }
+}
+
+playbackFile.addEventListener("change", () => {
+  const file = playbackFile.files[0];
+  if (file) attachPlayback(file);
+});
+for (const event of ["loadedmetadata", "timeupdate", "emptied"]) {
+  mediaPlayer.addEventListener(event, updatePlayback);
+}
+mediaPlayer.addEventListener("error", () => {
+  playbackHelp.textContent = "Your browser cannot play this format. The transcript and downloads are still available.";
+  updatePlayback();
+});
+
+function startProgress(startedAt = Date.now(), modelProfile = "faster") {
+  activeModelProfile = modelProfile;
+  isTranscribing = true;
+  for (const control of form.querySelectorAll("input, select, button")) control.disabled = true;
+  form.setAttribute("aria-busy", "true");
+  loadingState.hidden = false;
+  loadingTitle.textContent = "Uploading your recording…";
+  loadingCopy.textContent = "Keep this page open until the upload is accepted.";
+  const updateElapsed = () => {
+    elapsedTime.textContent = `Elapsed ${formatTimestamp((Date.now() - startedAt) / 1000)}`;
+  };
+  updateElapsed();
+  window.clearInterval(progressTimer);
+  progressTimer = window.setInterval(updateElapsed, 1000);
+}
+
+function finishProgress() {
+  window.clearInterval(progressTimer);
+  isTranscribing = false;
+  loadingState.hidden = true;
+  for (const control of form.querySelectorAll("input, select, button")) control.disabled = false;
+  submitButton.disabled = !fileInput.files.length;
+  form.removeAttribute("aria-busy");
 }
 
 function formatTimestamp(seconds) {
@@ -83,6 +163,10 @@ function formatTimestamp(seconds) {
 }
 
 function renderTranscript(result) {
+  playbackSection.hidden = false;
+  if (!playbackUrl) {
+    playbackHelp.textContent = "Choose the original recording to enable playback and clickable timestamps. It stays in your browser.";
+  }
   const text = result.text.trim();
   if (!text) {
     noSpeechState.hidden = false;
@@ -97,15 +181,28 @@ function renderTranscript(result) {
   const languageNames = { en: "English", he: "Hebrew" };
   const language = languageNames[result.language] || result.language.toUpperCase();
   const model = result.model.split("/").pop();
-  resultMeta.textContent = `${language} · ${formatTimestamp(result.duration_seconds)} · ${result.segments.length} segments · ${model}`;
+  const segmentCount = result.segments.length;
+  resultMeta.textContent = `${language} · ${formatTimestamp(result.duration_seconds)} · ${segmentCount} ${segmentCount === 1 ? "segment" : "segments"} · ${model}`;
 
   for (const segment of result.segments) {
     const item = document.createElement("li");
     item.className = "segment-item";
+    item.dataset.start = segment.start;
+    item.dataset.end = segment.end;
 
-    const timestamp = document.createElement("span");
+    const timestamp = document.createElement("button");
+    timestamp.type = "button";
     timestamp.className = "segment-time";
     timestamp.textContent = formatTimestamp(segment.start);
+    timestamp.setAttribute("aria-label", `Play from ${formatTimestamp(segment.start)}`);
+    timestamp.addEventListener("click", async () => {
+      mediaPlayer.currentTime = Math.min(segment.start, mediaPlayer.duration);
+      try {
+        await mediaPlayer.play();
+      } catch {
+        playbackHelp.textContent = "Press Play on the recording to continue listening.";
+      }
+    });
 
     const textNode = document.createElement("p");
     textNode.className = "segment-copy";
@@ -120,6 +217,7 @@ function renderTranscript(result) {
   transcriptContent.hidden = false;
   resultTitle.textContent = "Transcript ready";
   resultBadge.textContent = "COMPLETE";
+  updatePlayback();
 }
 
 function friendlyError(payload, status) {
@@ -168,6 +266,18 @@ async function waitForJob(accepted) {
       throw new Error(job.error_message || `The transcription job ${job.status}.`);
     }
     resultBadge.textContent = job.status.toUpperCase();
+    if (job.status === "queued") {
+      const retry = job.next_retry_at ? new Date(job.next_retry_at).getTime() : null;
+      loadingTitle.textContent = retry ? "Preparing another attempt…" : "Waiting for the worker…";
+      loadingCopy.textContent = retry
+        ? `Attempt ${job.attempts} of ${job.max_attempts} did not finish. Retrying in ${Math.max(0, Math.ceil((retry - Date.now()) / 1000))}s.`
+        : "Your upload is saved. You can reload this page and resume waiting.";
+    } else {
+      loadingTitle.textContent = "Transcribing your recording…";
+      loadingCopy.textContent = `Attempt ${job.attempts} of ${job.max_attempts}. ${activeModelProfile === "larger"
+        ? "First use of Advanced downloads several GB."
+        : "First use downloads the model; longer recordings take more time."}`;
+    }
     await wait(1000);
   }
 }
@@ -194,6 +304,7 @@ for (const eventName of ["dragleave", "drop"]) {
 }
 
 dropzone.addEventListener("drop", (event) => {
+  if (isTranscribing) return;
   const [file] = event.dataTransfer.files;
   if (!file) return;
   const transfer = new DataTransfer();
@@ -211,19 +322,16 @@ form.addEventListener("submit", async (event) => {
     return;
   }
 
-  isTranscribing = true;
   formError.hidden = true;
   resetResult();
-  loadingState.hidden = false;
   resultTitle.textContent = "Transcribing your recording…";
   resultBadge.textContent = "IN PROGRESS";
-  submitButton.disabled = true;
-  form.setAttribute("aria-busy", "true");
 
+  // Capture values before disabling controls: disabled fields are omitted by FormData.
   const formData = new FormData(form);
-  document.querySelector(".loading-copy").textContent = formData.get("model_profile") === "larger"
-    ? "Preparing the larger model and transcribing. First use may download several GB and take a few minutes."
-    : "Longer recordings can take a little while.";
+  const startedAt = Date.now();
+  startProgress(startedAt, formData.get("model_profile"));
+  attachPlayback(file);
   selectedFilename = file.name.replace(/\.[^.]+$/, "") || "transcript";
 
   try {
@@ -237,7 +345,6 @@ form.addEventListener("submit", async (event) => {
     }
     const response = await fetch(config.transcription_url, { method: "POST", body: formData });
     let payload = await response.json();
-    loadingState.hidden = true;
 
     if (!response.ok) {
       resultError.textContent = friendlyError(payload, response.status);
@@ -251,6 +358,8 @@ form.addEventListener("submit", async (event) => {
       status_url: payload.status_url,
       result_url: payload.result_url,
       filename: selectedFilename,
+      started_at: startedAt,
+      model_profile: activeModelProfile,
     }));
     payload = await waitForJob(payload);
     renderTranscript(payload);
@@ -259,12 +368,10 @@ form.addEventListener("submit", async (event) => {
     loadingState.hidden = true;
     resultError.textContent = error.message || "Could not reach the transcription service. Check that it is running and try again.";
     resultError.hidden = false;
-    resultTitle.textContent = "Connection problem";
-    resultBadge.textContent = "OFFLINE";
+    resultTitle.textContent = "Transcription needs attention";
+    resultBadge.textContent = "NEEDS ATTENTION";
   } finally {
-    isTranscribing = false;
-    submitButton.disabled = !fileInput.files.length;
-    form.removeAttribute("aria-busy");
+    finishProgress();
   }
 });
 
@@ -315,14 +422,11 @@ async function restorePendingJob() {
     return;
   }
 
-  isTranscribing = true;
   selectedFilename = pending.filename || "transcript";
   resetResult();
-  loadingState.hidden = false;
+  startProgress(Number.isFinite(pending.started_at) ? pending.started_at : Date.now(), pending.model_profile);
   resultTitle.textContent = "Recovering your transcription…";
   resultBadge.textContent = "IN PROGRESS";
-  submitButton.disabled = true;
-  form.setAttribute("aria-busy", "true");
   try {
     const result = await waitForJob(pending);
     loadingState.hidden = true;
@@ -335,9 +439,7 @@ async function restorePendingJob() {
     resultTitle.textContent = "Recovery needs attention";
     resultBadge.textContent = "NEEDS ATTENTION";
   } finally {
-    isTranscribing = false;
-    submitButton.disabled = !fileInput.files.length;
-    form.removeAttribute("aria-busy");
+    finishProgress();
   }
 }
 

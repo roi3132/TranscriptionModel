@@ -14,9 +14,31 @@ concurrency:
 
 jobs:
   quality:
-    name: Quality and fast tests
+    name: Quality and integration tests
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: transcription_test
+          POSTGRES_USER: transcription_test
+          POSTGRES_PASSWORD: transcription_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U transcription_test -d transcription_test"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+      redis:
+        image: redis:7.2-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+    env:
+      TEST_DATABASE_URL: postgresql://transcription_test:transcription_test@localhost:5432/transcription_test
+      TEST_REDIS_URL: redis://localhost:6379/0
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -44,6 +66,9 @@ jobs:
 
       - name: Build the distributable wheel
         run: make package
+
+      - name: Check frontend syntax
+        run: node --check src/transcription_service/static/assets/app.js
 
   docker:
     name: Docker build and startup

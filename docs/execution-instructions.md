@@ -123,9 +123,18 @@ Open <http://localhost:8000/> (or your configured host port):
 1. Choose a supported audio/video file with audible speech.
 2. Select Auto-detect, Hebrew, or English.
 3. Choose Speech for ordinary speech, or Music to process the complete audio track without VAD.
-4. Leave the model on Faster for the first evaluation. Larger requires more download space/RAM.
+4. Leave the model on Fast · Whisper Small for the first evaluation. Advanced · Whisper Large v3
+   requires more download space/RAM. Their API profile values remain `faster` and `larger`.
 5. Submit, wait for the queued/running job to finish, and inspect text and timestamps.
 6. Copy the text or download JSON, TXT, SRT, or VTT. Reloading while a job is active resumes polling.
+7. Play the original recording in the result panel, or click a segment timestamp to jump there.
+   The current segment is highlighted during playback. The player uses the local file; after a
+   reload, choose the original recording again using the playback file control. This selection
+   is for listening only and is not uploaded. Playback depends on browser codec support; a file
+   can transcribe successfully even if the browser cannot play it.
+
+During processing, the spinner stays visible and shows elapsed time, queue/running state, and
+retry attempts. Elapsed time includes upload and waiting; it is not an estimated completion time.
 
 The default limits are 100 MiB per file and 15 minutes of decoded media. Supported extensions are
 WAV, MP3, M4A, AAC, FLAC, OGG, Opus, MP4, MOV, WebM, and MKV. Only the first audio stream is selected;
@@ -252,9 +261,9 @@ uv run --frozen mypy src
 uv run --frozen pytest --cov=transcription_service --cov-report=term-missing
 ```
 
-Expected outcome: successful lock/format/lint/type checks and all tests passing. The most recent
-local run passed 78 tests with 78% coverage. Tests use in-memory job infrastructure and a fake
-transcriber, with real PyAV media normalization tests; no running Compose stack or model weights
+Expected outcome: successful lock/format/lint/type checks and all enabled tests passing.
+Fast tests use in-memory job infrastructure and a fake transcriber, with real PyAV media
+normalization tests; no running Compose stack or model weights
 are required. Installing the environment still requires package access on an empty cache.
 
 To run a focused suite, for example:
@@ -269,6 +278,26 @@ If Node.js is available, also check frontend syntax:
 ```bash
 node --check src/transcription_service/static/assets/app.js
 ```
+
+### Run real PostgreSQL and Redis tests
+
+The optional adapter tests use disposable infrastructure on ports 15432 and 16379, separate from
+the application's containers and data. Start it and run the marked suite:
+
+```bash
+docker compose -f compose.test.yaml up -d --wait --wait-timeout 90
+TEST_DATABASE_URL=postgresql://transcription_test:transcription_test@localhost:15432/transcription_test \
+TEST_REDIS_URL=redis://localhost:16379/0 \
+uv run --frozen pytest -m infrastructure -v
+docker compose -f compose.test.yaml down --volumes
+```
+
+Tests cover API submission through a real broker/repository, result exports and cache reuse,
+concurrent claims, idempotency, capacity limits, lease recovery, retries, JSON persistence,
+expiry, queue ordering, and worker heartbeats. Inference remains deterministic; no model is
+downloaded. Each database test creates and removes its own randomly named schema, and Redis
+cleanup removes only that test's queue/heartbeat keys. No shared database is truncated or flushed.
+Without the two environment variables, these tests are skipped. CI sets both and runs them.
 
 ### 3. Build the distribution wheel
 
@@ -328,7 +357,9 @@ Quote an entire `LANGUAGE=PATH` argument if the path contains spaces. The script
 once, submits each sample, polls to completion, and requires nonempty text before printing its JSON
 result. It exits nonzero on a failed/expired job, timeout, rejected upload, or empty transcript.
 Use audible speech samples: deliberate silence is valid in the API but intentionally fails this
-smoke test. Inspect the words and timestamps manually; this is not an accuracy benchmark.
+smoke test. Inspect the words and timestamps manually, or use `--reference-dir` and `--report`
+to measure word error rate. The [evaluation guide](evaluation/README.md) includes measured
+English/Hebrew results, reference prompts, scoring rules, and reproduction commands.
 
 For music or the larger model:
 
@@ -374,8 +405,11 @@ not simulate host failure or establish a backup/restore guarantee.
 ### What CI checks
 
 [The CI workflow](../.github/workflows/ci.yaml) installs Python 3.12 and locked dependencies, runs
-`make check test`, executes the Linux sandbox probe, and builds the wheel. It does not start the
-four-service stack, run real-model inference, measure accuracy, or check JavaScript syntax.
+`make check test` with real PostgreSQL and Redis service containers, executes the Linux sandbox
+probe, builds the wheel, and checks JavaScript syntax. A separate Docker job builds the image,
+starts the four-service stack, waits for readiness, checks the published API/UI, prints logs on
+failure, and removes its containers and volumes. CI does not download models or measure accuracy;
+real inference and browser interaction checks remain explicit local verification steps.
 
 ## Configuration reference
 

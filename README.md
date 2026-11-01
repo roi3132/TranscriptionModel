@@ -28,6 +28,7 @@ tests, architecture notes, and documented trade-offs are included for evaluation
 | [Trade-offs & Assumptions](docs/trade-offs-and-assumptions.md) | Evaluation assumptions, design choices and alternatives, scope shortcuts, their consequences, validation boundaries, and conditions for revisiting them. |
 | [Architecture Overview & Code Walkthrough](docs/service-architecture.html) | Runtime diagrams, one job traced through exact classes/methods, process and sandbox boundaries, data contracts, source map, and matching tests. Open the HTML file in a browser. |
 | [Security Hardening](docs/security-hardening.md) | HTTP protections, private files, inference sandbox, platform requirements, and security verification. |
+| [Small Accuracy Evaluation](docs/evaluation/README.md) | Measured English/Hebrew synthetic-speech results, reference texts, scoring rules, limitations, and reproduction commands. |
 | [Code and Architecture Review](docs/code-review.md) | Resolved findings and historical verification evidence. |
 | [Implementation Plan](docs/architecture-plan.html) | Completed implementation phases and historical milestones. Open the HTML file in a browser. |
 
@@ -71,14 +72,17 @@ make check test package
 ```
 
 The fast suite uses deterministic inference and job-infrastructure fakes, so it needs no running
-database, Redis, or model download. Packaging may fetch the declared build backend. The most recent
-local fast-suite run passed 78 tests with 78% coverage; this does not measure real transcription
-accuracy or prove the Linux sandbox works on the evaluation machine. The
-[testing guide](docs/execution-instructions.md#test-the-solution) separates fast checks, container
+database, Redis, or model download. Real PostgreSQL/Redis tests run when `TEST_DATABASE_URL` and
+`TEST_REDIS_URL` are set; otherwise they are skipped. Packaging may fetch the declared build backend.
+Passing tests does not measure real transcription accuracy or prove the Linux sandbox works on
+the evaluation machine. The latest full local run passed 93 tests with 83% coverage, including
+the real infrastructure tests. The [testing guide](docs/execution-instructions.md#test-the-solution)
+separates fast checks, container
 readiness, sandbox verification, and real-model inference.
 
-GitHub Actions runs the quality checks and a separate Docker build/startup job on pushes,
-pull requests, and manual workflow runs. The Docker job starts all four services, waits for
+GitHub Actions runs quality checks, real PostgreSQL/Redis tests, frontend syntax checks, and a
+separate Docker build/startup job on pushes, pull requests, and manual workflow runs.
+The Docker job starts all four services, waits for
 readiness, checks the published API and browser interface, prints logs on failure, and removes
 its containers and volumes afterward. It does not download model weights or run real inference.
 
@@ -89,6 +93,8 @@ its containers and volumes afterward. It does not download model weights or run 
 - Receive `202 Accepted` with origin-relative status and result URLs.
 - Poll through `queued` and `running` to `succeeded`, `failed`, or `expired`.
 - Download a successful result as JSON, TXT, SRT, or VTT.
+- Play the original audio/video locally, click timestamps to seek, and follow highlighted segments.
+- See elapsed time, queued/running states, and retry attempts while waiting.
 - Resume browser polling after reload; reuse matching submissions through idempotency keys and
   content hashing.
 
@@ -103,7 +109,8 @@ recordings (100 MiB / 15 minutes by default). It prioritizes durable asynchronou
 reproducible dependencies, and enforceable execution limits.
 
 Explicit scope shortcuts include no account/authentication layer, no distributed user quotas, no
-multi-host media storage, no warm model pool, and no transcription-accuracy benchmark. Only the
+multi-host media storage, no warm model pool, and no representative human-speech benchmark. A small
+synthetic English/Hebrew accuracy evaluation is included with explicit limitations. Only the
 first audio stream is selected, normalized PCM is buffered in memory, and completed chunk text is
 joined without cross-chunk context reconciliation. These choices and their operational consequences
 are documented in [Trade-offs & Assumptions](docs/trade-offs-and-assumptions.md), including the
