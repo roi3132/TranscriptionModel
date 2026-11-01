@@ -19,6 +19,7 @@ const copyFeedback = document.querySelector("#copy-feedback");
 
 let latestTranscript = "";
 let selectedFilename = "transcript";
+let isTranscribing = false;
 
 function formatBytes(bytes) {
   if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
@@ -42,7 +43,7 @@ function setFile(file) {
   document.querySelector("#file-name").textContent = file.name;
   document.querySelector("#file-size").textContent = formatBytes(file.size);
   selectedFile.hidden = false;
-  submitButton.disabled = false;
+  submitButton.disabled = isTranscribing;
 }
 
 function resetResult() {
@@ -82,7 +83,8 @@ function renderTranscript(result) {
   transcriptText.dir = "auto";
   const languageNames = { en: "English", he: "Hebrew" };
   const language = languageNames[result.language] || result.language.toUpperCase();
-  resultMeta.textContent = `${language} · ${formatTimestamp(result.duration_seconds)} · ${result.segments.length} segments`;
+  const model = result.model.split("/").pop();
+  resultMeta.textContent = `${language} · ${formatTimestamp(result.duration_seconds)} · ${result.segments.length} segments · ${model}`;
 
   for (const segment of result.segments) {
     const item = document.createElement("li");
@@ -154,12 +156,14 @@ dropzone.addEventListener("drop", (event) => {
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
+  if (isTranscribing) return;
   const file = fileInput.files[0];
   if (!file) {
     showFormError("Choose an audio or video file first.");
     return;
   }
 
+  isTranscribing = true;
   formError.hidden = true;
   resetResult();
   loadingState.hidden = false;
@@ -169,6 +173,9 @@ form.addEventListener("submit", async (event) => {
   form.setAttribute("aria-busy", "true");
 
   const formData = new FormData(form);
+  document.querySelector(".loading-copy").textContent = formData.get("model_profile") === "larger"
+    ? "Preparing the larger model and transcribing. First use may download several GB and take a few minutes."
+    : "Longer recordings can take a little while.";
   selectedFilename = file.name.replace(/\.[^.]+$/, "") || "transcript";
 
   try {
@@ -193,6 +200,7 @@ form.addEventListener("submit", async (event) => {
     resultTitle.textContent = "Connection problem";
     resultBadge.textContent = "OFFLINE";
   } finally {
+    isTranscribing = false;
     submitButton.disabled = !fileInput.files.length;
     form.removeAttribute("aria-busy");
   }

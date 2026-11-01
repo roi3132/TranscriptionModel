@@ -14,7 +14,11 @@ from transcription_service.schemas.transcription import (
     TranscriptionResponse,
     TranscriptionSegment,
 )
-from transcription_service.services.transcription import AudioMode, TranscriptionService
+from transcription_service.services.transcription import (
+    AudioMode,
+    ModelProfile,
+    TranscriptionService,
+)
 
 router = APIRouter(prefix="/transcriptions", tags=["transcriptions"])
 LANGUAGE_CODE_PATTERN = re.compile(r"^[a-z]{2,3}$")
@@ -75,6 +79,10 @@ async def create_transcription(
         AudioMode,
         Form(description="Use 'speech' for VAD or 'music' to process the full audio track"),
     ] = AudioMode.SPEECH,
+    model_profile: Annotated[
+        ModelProfile,
+        Form(description="'faster' uses the small model; 'larger' lazily loads large-v3"),
+    ] = ModelProfile.FASTER,
 ) -> TranscriptionResponse:
     """Return a completed, timestamped transcription for one media upload."""
 
@@ -90,6 +98,7 @@ async def create_transcription(
             content_type=file.content_type,
             language=_normalized_language(language),
             audio_mode=audio_mode,
+            model_profile=model_profile,
         )
         return TranscriptionResponse(
             text=completed.result.text,

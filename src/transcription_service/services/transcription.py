@@ -5,6 +5,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from functools import partial
+from threading import Lock
 from time import perf_counter
 from typing import BinaryIO, Protocol, runtime_checkable
 
@@ -19,6 +20,7 @@ from transcription_service.core.errors import (
     MediaTooLongError,
     ModelBusyError,
     ModelInferenceError,
+    ModelNotReadyError,
     UploadTooLargeError,
 )
 
@@ -30,6 +32,13 @@ class AudioMode(StrEnum):
 
     SPEECH = "speech"
     MUSIC = "music"
+
+
+class ModelProfile(StrEnum):
+    """Allowlisted model choices independent of audio processing mode."""
+
+    FASTER = "faster"
+    LARGER = "larger"
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,11 +126,16 @@ class TranscriptionService:
         transcriber: Transcriber,
         media_inspector: MediaInspector,
         settings: Settings,
+        *,
+        transcriber_factory: Callable[[Settings], Transcriber] | None = None,
     ) -> None:
         self._transcriber = transcriber
         self._media_inspector = media_inspector
         self._settings = settings
         self._inference_slots = asyncio.Semaphore(settings.max_concurrent_transcriptions)
+        self._transcriber_factory = transcriber_factory
+        self._larger_transcriber: Transcriber | None = None
+        self._model_load_lock = Lock()
 
     async def transcribe(
         self,
@@ -132,6 +146,7 @@ class TranscriptionService:
         content_type: str | None,
         language: str | None,
         audio_mode: AudioMode,
+        model_profile: ModelProfile = ModelProfile.FASTER,
     ) -> CompletedTranscription:
         """Validate an upload, wait for capacity, and execute inference off-loop."""
 
@@ -159,12 +174,13 @@ class TranscriptionService:
         started_at = perf_counter()
         try:
             media.seek(0)
-            result = await anyio.to_thread.run_sync(
+            result, model_id = await anyio.to_thread.run_sync(
                 partial(
-                    self._transcriber.transcribe,
+                    self._run_inference,
                     media,
                     language=language,
                     audio_mode=audio_mode,
+                    model_profile=model_profile,
                 )
             )
         except ApplicationError:
@@ -172,7 +188,7 @@ class TranscriptionService:
         except Exception as exc:
             await logger.aexception(
                 "model_inference_failed",
-                model=self._transcriber.model_id,
+                model_profile=model_profile.value,
                 media_format=metadata.format_name,
             )
             raise ModelInferenceError from exc
@@ -183,7 +199,40 @@ class TranscriptionService:
         return CompletedTranscription(
             result=result,
             processing_time_seconds=perf_counter() - started_at,
-            model_id=self._transcriber.model_id,
+            model_id=model_id,
+        )
+
+    def _run_inference(
+        self,
+        media: BinaryIO,
+        *,
+        language: str | None,
+        audio_mode: AudioMode,
+        model_profile: ModelProfile,
+    ) -> tuple[TranscriptionResult, str]:
+        """Load and run the selected model within the existing inference slot."""
+
+        transcriber = self._transcriber
+        if model_profile is ModelProfile.LARGER:
+            with self._model_load_lock:
+                if self._larger_transcriber is None:
+                    if self._transcriber_factory is None:
+                        raise ModelNotReadyError
+                    settings = self._settings.model_copy(
+                        update={
+                            "model_id": self._settings.larger_model_id,
+                            "model_revision": self._settings.larger_model_revision,
+                        }
+                    )
+                    logger.info("larger_model_loading", model=settings.model_id)
+                    self._larger_transcriber = self._transcriber_factory(settings)
+                    logger.info("larger_model_ready", model=settings.model_id)
+                transcriber = self._larger_transcriber
+        if language is not None and language not in transcriber.supported_languages:
+            raise InvalidLanguageError(language)
+        return (
+            transcriber.transcribe(media, language=language, audio_mode=audio_mode),
+            transcriber.model_id,
         )
 
     def _validate_size(self, size_bytes: int) -> None:

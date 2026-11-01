@@ -369,6 +369,7 @@
                 <tr><td><code>file</code></td><td>Yes</td><td>Audio in phase 1; audio or video from phase 2.</td></tr>
                 <tr><td><code>language</code></td><td>No</td><td><code>auto</code> by default; accept Whisper-supported language codes such as <code>he</code> and <code>en</code>.</td></tr>
                 <tr><td><code>audio_mode</code></td><td>No</td><td><code>speech</code> by default enables VAD; <code>music</code> processes the complete audio track.</td></tr>
+                <tr><td><code>model_profile</code></td><td>No</td><td><code>faster</code> (default) selects small; <code>larger</code> lazily loads pinned large-v3. Independent of Speech/Music mode; accuracy is not guaranteed to improve.</td></tr>
               </tbody>
             </table>
             <pre><code>{
@@ -524,6 +525,7 @@
                 <label class="task"><input type="checkbox" data-task="3-4" checked><span>Add copy-to-clipboard and download-as-text actions without adding a frontend build tool.</span></label>
               </div>
               <div class="callout"><strong>Exit check:</strong> Complete the flow using only the browser, test keyboard operation, and visually inspect both Hebrew RTL and English LTR output.</div>
+              <div class="note">Model selector addition: small remains loaded at startup. Large-v3 loads once on first selection inside the shared inference limit, then remains cached. At most two models reside in memory per process. First use can download several GB; keep the UI explicit about latency and the lack of guaranteed accuracy improvement.</div>
             </div>
           </article>
 

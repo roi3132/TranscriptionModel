@@ -8,7 +8,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from transcription_service.main import create_app
-from transcription_service.services.transcription import AudioMode
+from transcription_service.services.transcription import AudioMode, ModelProfile
 
 
 def _sample(value: str) -> tuple[str, Path]:
@@ -38,6 +38,12 @@ def main() -> None:
         default=AudioMode.SPEECH.value,
         help="speech enables VAD; music processes the complete audio track",
     )
+    parser.add_argument(
+        "--model-profile",
+        choices=[profile.value for profile in ModelProfile],
+        default=ModelProfile.FASTER.value,
+        help="faster uses the default model; larger loads the optional larger model",
+    )
     args = parser.parse_args()
 
     with TestClient(create_app()) as client:
@@ -51,7 +57,11 @@ def main() -> None:
                 response = client.post(
                     "/v1/transcriptions",
                     files={"file": (path.name, media, content_type)},
-                    data={"language": language, "audio_mode": args.audio_mode},
+                    data={
+                        "language": language,
+                        "audio_mode": args.audio_mode,
+                        "model_profile": args.model_profile,
+                    },
                 )
             if response.status_code != 200:
                 raise SystemExit(f"{path.name} failed: {response.status_code} {response.text}")

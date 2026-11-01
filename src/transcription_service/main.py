@@ -73,6 +73,7 @@ def create_app(
                     transcriber,
                     resolved_media_inspector,
                     resolved_settings,
+                    transcriber_factory=transcriber_factory,
                 )
                 runtime_status.mark_ready()
                 await logger.ainfo("transcription_model_ready", model=transcriber.model_id)

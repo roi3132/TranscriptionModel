@@ -12,6 +12,7 @@ def test_root_serves_accessible_transcription_interface(client: TestClient) -> N
     assert 'id="media-file"' in response.text
     assert 'name="language"' in response.text
     assert 'name="audio_mode"' in response.text
+    assert 'name="model_profile"' in response.text
     assert 'id="transcript-text" dir="auto"' in response.text
     assert 'role="alert"' in response.text
     assert "/assets/app.css" in response.text

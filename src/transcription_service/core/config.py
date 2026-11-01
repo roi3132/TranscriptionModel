@@ -31,6 +31,8 @@ class Settings(BaseSettings):
 
     model_id: str = "Systran/faster-whisper-small"
     model_revision: str = "536b0662742c02347bc0e980a01041f333bce120"
+    larger_model_id: str = "Systran/faster-whisper-large-v3"
+    larger_model_revision: str = "edaa852ec7e145841d8ffdb056a99866b5f0a478"
     device: Literal["auto", "cpu", "cuda"] = "cpu"
     compute_type: str = "int8"
     beam_size: int = Field(default=5, gt=0)

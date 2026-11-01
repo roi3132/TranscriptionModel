@@ -16,6 +16,8 @@ upload interface and Docker Compose packaging. See
 - Automatically detect the language with `language=auto`.
 - Choose `audio_mode=speech` for faster VAD-filtered processing or `audio_mode=music` to process the
   complete audio track.
+- Choose `model_profile=faster` (default, Whisper small) or `model_profile=larger` (Whisper large-v3),
+  independently of Speech/Music mode. Larger does not guarantee more accurate lyrics.
 - Return full text, detected-language confidence, media duration, processing time, and timestamped
   segments.
 - Enforce configurable file-size, media-duration, queue-timeout, and inference-concurrency limits.
@@ -47,9 +49,11 @@ TranscriptionService
    Systran/faster-whisper-small
 ```
 
-The model is loaded once during the FastAPI lifespan. Until loading succeeds,
+The default model is loaded once during the FastAPI lifespan. Until loading succeeds,
 `/health/ready` returns `503`; `/health/live` remains independent of model state. Blocking media
 inspection and inference run in worker threads rather than on the asynchronous HTTP event loop.
+The optional larger model loads on its first request, inside the same inference concurrency limit,
+and is reused afterward. Readiness describes the default model; it does not pre-download large-v3.
 
 ## Run locally
 
@@ -103,7 +107,8 @@ uv run --frozen uvicorn transcription_service.main:app --reload
 ```
 
 Open <http://localhost:8000/> for the browser interface. Choose an audio or video file, select
-Auto-detect, Hebrew, or English, and choose Speech or Music mode. The page shows progress and
+Auto-detect, Hebrew, or English, choose Speech or Music mode, and select Faster or Larger model.
+The larger model may download several GB on first use and needs additional RAM. The page shows progress and
 timestamped transcript segments, with copy and `.txt` download actions. You can also use the API
 directly at <http://localhost:8000/docs> or with the `curl` example below.
 
@@ -132,6 +137,7 @@ curl --fail \
   -F "file=@/absolute/path/to/sample.wav" \
   -F "language=he" \
   -F "audio_mode=speech" \
+  -F "model_profile=faster" \
   http://localhost:8000/v1/transcriptions
 ```
 
@@ -178,9 +184,11 @@ uv run --frozen python scripts/smoke_media.py \
 ```
 
 For a song or music-heavy recording, add `--audio-mode music`.
+To exercise the larger model through the same API, add `--model-profile larger`.
 
 The equivalent Make target accepts one or more language/path samples, for example
 `make smoke SAMPLES="en=/path/to/english.wav he=/path/to/hebrew.m4a" AUDIO_MODE=music`.
+Add `MODEL_PROFILE=larger` to that Make command to use large-v3.
 
 The smoke test loads the configured Hugging Face model, waits for readiness, and sends every sample
 through the public HTTP endpoint. It is deliberately excluded from normal CI because it downloads
@@ -194,6 +202,8 @@ All settings use the `TRANSCRIPTION_` environment prefix. Defaults are listed in
 | --- | --- | --- |
 | `TRANSCRIPTION_MODEL_ID` | `Systran/faster-whisper-small` | Hugging Face CTranslate2 model |
 | `TRANSCRIPTION_MODEL_REVISION` | `536b066...` | Reproducible Hugging Face model commit |
+| `TRANSCRIPTION_LARGER_MODEL_ID` | `Systran/faster-whisper-large-v3` | Optional larger model, loaded on demand |
+| `TRANSCRIPTION_LARGER_MODEL_REVISION` | `edaa852...` | Pinned large-v3 model commit |
 | `TRANSCRIPTION_DEVICE` | `cpu` | CTranslate2 device: `cpu`, `cuda`, or `auto` |
 | `TRANSCRIPTION_COMPUTE_TYPE` | `int8` | CPU-friendly quantized inference |
 | `TRANSCRIPTION_BEAM_SIZE` | `5` | Beam-search quality/speed trade-off |
@@ -261,6 +271,33 @@ The model defaults to Hugging Face revision
 `536b0662742c02347bc0e980a01041f333bce120`. Following `main` would allow weights or supporting files
 to change without a code or lockfile change, making failures and output differences harder to
 reproduce.
+
+### Explicit larger-model option with lazy loading
+
+The browser and API expose the allowlisted profiles `faster` and `larger`. Existing requests default
+to `faster`, preserving the CPU-friendly small model. `larger` selects `Systran/faster-whisper-large-v3`
+at revision `edaa852ec7e145841d8ffdb056a99866b5f0a478`. Clients cannot supply arbitrary model IDs or
+revisions; operators configure those through environment variables. Both profiles remain independent
+of `audio_mode`, and responses identify the model actually used.
+
+The default model stays in memory. The larger model is downloaded/loaded on its first selected
+request, in a worker thread, and then cached in memory until process shutdown. A lock prevents
+duplicate concurrent initialization. Loading and inference share the existing semaphore and queue
+timeout, so first-use loading occupies an inference slot. At most two model instances are retained
+per process; memory use increases after selecting the larger option. Both use the same disk cache,
+device, compute type, and beam-size settings. `processing_time_seconds` includes any first-use
+download/loading time. Model initialization failures return a sanitized error without silently
+substituting the small model; later requests can retry, and the default model remains usable.
+
+This trades higher RAM use after first selection for fast repeated use and preserves quick startup.
+Evicting models on every selection would reduce resident memory but cause repeated loading and
+model-switch races. Revisit the cache policy for memory-constrained deployments or a larger model
+catalog; separate inference workers are preferable at that scale.
+
+The UI deliberately says “Larger model”, not “Higher accuracy”. On the same 10.3-second Hebrew song
+clip, small took 15.2 seconds and produced garbled words; large-v3 took 21.5 seconds and returned
+only “תודה רבה.” with an implausible timestamp. These are one-clip observations, not a benchmark or
+quality guarantee. Singing remains best-effort, and the larger option is retained for user comparison.
 
 ### No database in the initial product
 

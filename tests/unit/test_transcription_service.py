@@ -12,6 +12,7 @@ from transcription_service.core.errors import ModelBusyError
 from transcription_service.services.transcription import (
     AudioMode,
     MediaMetadata,
+    ModelProfile,
     SegmentResult,
     TranscriptionResult,
     TranscriptionService,
@@ -56,7 +57,8 @@ class BlockingTranscriber:
         )
 
 
-def test_rejects_second_request_when_inference_queue_times_out() -> None:
+@pytest.mark.parametrize("model_profile", list(ModelProfile))
+def test_rejects_second_request_when_inference_queue_times_out(model_profile: ModelProfile) -> None:
     async def scenario() -> None:
         settings = Settings(
             _env_file=None,
@@ -65,7 +67,9 @@ def test_rejects_second_request_when_inference_queue_times_out() -> None:
             inference_queue_timeout_seconds=0.01,
         )
         transcriber = BlockingTranscriber()
-        service = TranscriptionService(transcriber, StaticMediaInspector(), settings)
+        service = TranscriptionService(
+            transcriber, StaticMediaInspector(), settings, transcriber_factory=lambda _: transcriber
+        )
         first_request = asyncio.create_task(
             service.transcribe(
                 io.BytesIO(b"first"),
@@ -74,6 +78,7 @@ def test_rejects_second_request_when_inference_queue_times_out() -> None:
                 content_type="audio/wav",
                 language="en",
                 audio_mode=AudioMode.SPEECH,
+                model_profile=model_profile,
             )
         )
 
@@ -95,5 +100,50 @@ def test_rejects_second_request_when_inference_queue_times_out() -> None:
 
         completed = await first_request
         assert completed.result.text == "done"
+
+    asyncio.run(scenario())
+
+
+def test_concurrent_large_requests_initialize_model_once() -> None:
+    async def scenario() -> None:
+        settings = Settings(_env_file=None, max_concurrent_transcriptions=2)
+        transcriber = BlockingTranscriber()
+        transcriber.release.set()
+        loading_started = Event()
+        finish_loading = Event()
+        load_count = 0
+
+        def factory(model_settings: Settings) -> BlockingTranscriber:
+            nonlocal load_count
+            load_count += 1
+            assert model_settings.model_id == settings.larger_model_id
+            loading_started.set()
+            if not finish_loading.wait(timeout=2):
+                raise TimeoutError("test did not release model loading")
+            return transcriber
+
+        service = TranscriptionService(
+            transcriber, StaticMediaInspector(), settings, transcriber_factory=factory
+        )
+
+        async def request() -> str:
+            completed = await service.transcribe(
+                io.BytesIO(b"audio"),
+                size_bytes=5,
+                filename="sample.wav",
+                content_type="audio/wav",
+                language="he",
+                audio_mode=AudioMode.MUSIC,
+                model_profile=ModelProfile.LARGER,
+            )
+            return completed.result.text
+
+        tasks = [asyncio.create_task(request()) for _ in range(2)]
+        try:
+            assert await asyncio.to_thread(loading_started.wait, 1)
+        finally:
+            finish_loading.set()
+        assert await asyncio.gather(*tasks) == ["done", "done"]
+        assert load_count == 1
 
     asyncio.run(scenario())

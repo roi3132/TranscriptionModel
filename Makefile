@@ -1,6 +1,7 @@
 UV ?= uv
 SAMPLES ?=
 AUDIO_MODE ?= speech
+MODEL_PROFILE ?= faster
 
 .PHONY: setup run check test smoke docker-build docker-up docker-smoke docker-down
 
@@ -21,7 +22,7 @@ test:
 
 smoke:
 	@test -n "$(SAMPLES)" || (echo 'Set SAMPLES, e.g. SAMPLES="he=/path/to/sample.wav"' >&2; exit 2)
-	$(UV) run --frozen python scripts/smoke_media.py --audio-mode "$(AUDIO_MODE)" $(SAMPLES)
+	$(UV) run --frozen python scripts/smoke_media.py --audio-mode "$(AUDIO_MODE)" --model-profile "$(MODEL_PROFILE)" $(SAMPLES)
 
 docker-build:
 	docker compose build

@@ -102,6 +102,15 @@
             </fieldset>
           </div>
 
+          <div class="model-field">
+            <label class="field-label" for="model-profile">Transcription model</label>
+            <select class="select-control" id="model-profile" name="model_profile" aria-describedby="model-help">
+              <option value="faster">Faster · small model</option>
+              <option value="larger">Larger model · large-v3</option>
+            </select>
+            <p class="model-help" id="model-help">The larger model takes longer and may download on first use. Better accuracy is not guaranteed, especially for songs.</p>
+          </div>
+
           <p class="error-message" id="form-error" role="alert" hidden></p>
           <button class="submit-button" id="submit-button" type="submit" disabled>
             <span>Transcribe recording</span>
