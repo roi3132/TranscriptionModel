@@ -7,14 +7,14 @@ state/results, Redis for durable handoff, and a local named volume for queued me
 
 ## Roadmap status
 
-The interview scope expanded after the synchronous review. Phase 6 is implemented and verified;
-phases 7–8 remain ordered work in `docs/architecture-plan.html` and the README:
+The interview scope expanded after the synchronous review. Phases 6 and 7 are implemented and
+verified; Phase 8 remains ordered work in `docs/architecture-plan.html` and the README:
 
 1. **Implemented:** run the API, Redis broker, PostgreSQL job store, media volume, and independent
    inference worker locally; return `202` and expose job status and result endpoints.
-2. **Next:** add retries, hard worker deadlines, idempotency/hash deduplication, crash recovery, retention,
-   cleanup, and component-specific readiness.
-3. **Later:** add explicit 16 kHz mono normalization, defined silent-input behavior, TXT/SRT/VTT exports, rate
+2. **Implemented:** retries, hard child-process deadlines, idempotency/hash deduplication, leased
+   crash recovery, retention, cleanup, and component-specific readiness.
+3. **Next:** add explicit 16 kHz mono normalization, defined silent-input behavior, TXT/SRT/VTT exports, rate
    limiting, long-file chunking, and asynchronous UI polling.
 
 Managed cloud services are not required. Redis and PostgreSQL are self-hosted containers, and the
@@ -41,24 +41,29 @@ scaling remain later deployment options.
   implementation just to access a dataclass or enum.
 - `services/models.py` owns the bounded, thread-safe model cache. `TranscriptionService` owns the
   pipeline and capacity policy.
+- `services/jobs.py` owns submission identity and lifecycle policy; `services/execution.py` owns
+  inline and isolated attempt strategies. PostgreSQL and Redis details remain in `adapters/jobs.py`.
+- The worker is a supervisor. Native decoding/model work occurs in a disposable child, while the
+  supervisor owns leases, retries, heartbeats, dispatch recovery, and cleanup.
 - Media validation and inference now run as one blocking pipeline, with one exception boundary and
   one selected-model language check.
 - Standard Starlette multipart parsing, AnyIO capacity limiting, PyAV decoding, and Hatch packaging
   remain responsible for their existing jobs; no parser, audio feature extractor, or build system
   was reimplemented.
-- README startup claims now match Uvicorn's lifespan behavior: the HTTP listener becomes available
-  after eager initialization, and readiness reports a failed initialization afterward.
+- README startup claims now match both lifecycles: native readiness follows eager model loading;
+  asynchronous readiness checks database, broker, and a renewable worker heartbeat without inference.
 
 ## Boundaries retained deliberately
 
-- Native mode still shares codecs/model execution with the API process. Compose moves inference to
-  an independent worker, but Phase 6 does not yet isolate each attempt. A hard wall-clock deadline
-  or hostile-input sandbox needs a terminable per-attempt subprocess rather than an asyncio timeout.
-- Admission and inference limits are per process. Multiple Uvicorn workers multiply both resident
-  model memory and allowed work. Keep one worker per configured instance.
-- Two model instances may remain resident after the larger option is first used. The small model
-  remains the startup default; model eviction or separate model workers would be the next step for
-  tighter memory budgets or a larger catalog.
+- Native mode still shares codecs/model execution with the API process and therefore has no hard
+  deadline. Compose isolates each attempt in a terminable subprocess; this is a process boundary,
+  not a complete hostile-input OS sandbox with per-job seccomp/cgroup limits.
+- Native admission/inference limits remain per process. Asynchronous pending-job admission is
+  serialized in PostgreSQL and therefore deployment-wide; each supervisor runs one child at a time.
+  Keep one Uvicorn API process locally and scale supervisors explicitly.
+- Two model instances may remain resident in native mode after the larger option is first used.
+  Asynchronous attempts instead reload process-local model state each time, trading latency for hard
+  cancellation and memory reclamation.
 - Duration validation intentionally decodes audio before faster-whisper decodes it again. This
   costs CPU, but rejects overlong inputs before the model's full-array preprocessing and avoids
   duplicating its resampling/feature-extraction implementation.
@@ -92,3 +97,9 @@ Phase 5 verification on 1 November 2026 produced the following evidence:
   stack accepted a generated M4A with `202`, completed real inference, returned the persisted result,
   and returned that same result after both API and worker restarted. PostgreSQL, Redis, media, and
   model-cache volumes remained local and no cloud account was used.
+- Phase 7 raised the suite to 80 passing tests and added bounded retry/terminal policy, renewable
+  atomic leases, stale-claim recovery, idempotency and SHA-256 caching, retention cleanup, hard
+  child termination, storage/pending limits, and dynamic readiness. The existing Phase 6 database
+  migrated in place. Real Compose checks proved cache reuse and conflict behavior, a two-attempt
+  `job_timeout` under a forced 0.2-second deadline, readiness failure after worker heartbeat expiry,
+  and exactly one attempt while two supervisors competed for a real job.

@@ -1,18 +1,16 @@
-"""Independent durable transcription worker entry point."""
+"""Independent durable transcription worker supervisor entry point."""
 
 import structlog
 
-from transcription_service.adapters.faster_whisper import FasterWhisperTranscriber
 from transcription_service.adapters.jobs import (
     LocalMediaStore,
     PostgresJobRepository,
     RedisJobBroker,
 )
-from transcription_service.adapters.media import PyAvMediaInspector
 from transcription_service.core.config import get_settings
 from transcription_service.core.logging import configure_logging
+from transcription_service.services.execution import IsolatedJobRunner
 from transcription_service.services.jobs import TranscriptionJobWorker
-from transcription_service.services.transcription import TranscriptionService
 
 logger = structlog.get_logger(__name__)
 
@@ -27,16 +25,16 @@ def main() -> None:
     repository.ping()
     broker.ping()
 
-    transcriber = FasterWhisperTranscriber.from_settings(settings)
-    service = TranscriptionService(
-        transcriber,
-        PyAvMediaInspector(max_duration_seconds=settings.max_media_duration_seconds),
-        settings,
-        transcriber_factory=FasterWhisperTranscriber.from_settings,
-    )
-    logger.info("worker_ready", model=transcriber.model_id)
+    runner = IsolatedJobRunner(settings.job_timeout_seconds)
+    logger.info("worker_ready", attempt_timeout_seconds=settings.job_timeout_seconds)
     try:
-        TranscriptionJobWorker(repository, broker, media_store, service).run_forever()
+        TranscriptionJobWorker(
+            repository,
+            broker,
+            media_store,
+            runner,
+            settings,
+        ).run_forever()
     finally:
         broker.close()
 

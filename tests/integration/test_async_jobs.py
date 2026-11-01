@@ -1,89 +1,21 @@
 """Durable asynchronous job API and worker integration tests."""
 
-from collections import deque
 from collections.abc import Callable
-from dataclasses import replace
-from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from tests.conftest import FakeTranscriber, make_wav_bytes
+from tests.job_fakes import MemoryJobBroker, MemoryJobRepository
 from transcription_service.adapters.jobs import LocalMediaStore
 from transcription_service.adapters.media import PyAvMediaInspector
 from transcription_service.core.config import Settings
-from transcription_service.jobs.domain import JobStatus, TranscriptionJob
+from transcription_service.jobs.domain import JobStatus
 from transcription_service.main import create_app
+from transcription_service.services.execution import InlineJobRunner
 from transcription_service.services.jobs import TranscriptionJobWorker
 from transcription_service.services.transcription import TranscriptionService
-
-
-class MemoryJobRepository:
-    """Keep authoritative state across app restarts without external services."""
-
-    def __init__(self) -> None:
-        self.jobs: dict[str, TranscriptionJob] = {}
-
-    def migrate(self) -> None:
-        return None
-
-    def ping(self) -> None:
-        return None
-
-    def create(self, job: TranscriptionJob) -> None:
-        self.jobs[job.id] = job
-
-    def get(self, job_id: str) -> TranscriptionJob | None:
-        return self.jobs.get(job_id)
-
-    def mark_running(self, job_id: str) -> bool:
-        job = self.jobs.get(job_id)
-        if job is None or job.status is not JobStatus.QUEUED:
-            return False
-        self.jobs[job_id] = replace(
-            job,
-            status=JobStatus.RUNNING,
-            updated_at=datetime.now(UTC),
-        )
-        return True
-
-    def mark_succeeded(self, job_id: str, result: dict[str, object]) -> None:
-        job = self.jobs[job_id]
-        self.jobs[job_id] = replace(
-            job,
-            status=JobStatus.SUCCEEDED,
-            result=result,
-            updated_at=datetime.now(UTC),
-        )
-
-    def mark_failed(self, job_id: str, *, code: str, message: str) -> None:
-        job = self.jobs[job_id]
-        self.jobs[job_id] = replace(
-            job,
-            status=JobStatus.FAILED,
-            error_code=code,
-            error_message=message,
-            updated_at=datetime.now(UTC),
-        )
-
-
-class MemoryJobBroker:
-    def __init__(self) -> None:
-        self.jobs: deque[str] = deque()
-
-    def ping(self) -> None:
-        return None
-
-    def enqueue(self, job_id: str) -> None:
-        self.jobs.append(job_id)
-
-    def dequeue(self, timeout_seconds: int) -> str | None:
-        del timeout_seconds
-        return self.jobs.popleft() if self.jobs else None
-
-    def close(self) -> None:
-        return None
 
 
 def _async_settings(settings: Settings, media_path: Path) -> Settings:
@@ -199,7 +131,13 @@ def test_worker_completes_job_and_exposes_result(
             PyAvMediaInspector(max_duration_seconds=900),
             settings,
         )
-        worker = TranscriptionJobWorker(repository, broker, media_store, service)
+        worker = TranscriptionJobWorker(
+            repository,
+            broker,
+            media_store,
+            InlineJobRunner(service),
+            async_settings,
+        )
         worker.process(accepted["id"])
 
         status = client.get(accepted["status_url"])

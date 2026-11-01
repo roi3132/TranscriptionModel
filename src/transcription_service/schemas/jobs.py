@@ -1,7 +1,6 @@
 """HTTP schemas for durable transcription jobs."""
 
 from datetime import datetime
-from typing import Literal
 
 from pydantic import BaseModel
 
@@ -11,7 +10,7 @@ from transcription_service.schemas.transcription import TranscriptionResponse
 
 class JobAcceptedResponse(BaseModel):
     id: str
-    status: Literal[JobStatus.QUEUED]
+    status: JobStatus
     status_url: str
     result_url: str
 
@@ -23,6 +22,10 @@ class JobStatusResponse(BaseModel):
     updated_at: datetime
     error_code: str | None = None
     error_message: str | None = None
+    attempts: int
+    max_attempts: int
+    next_retry_at: datetime | None = None
+    expires_at: datetime | None = None
     result_url: str | None = None
 
 

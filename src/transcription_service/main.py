@@ -84,7 +84,10 @@ def create_app(
                     await anyio.to_thread.run_sync(repository.ping)
                     await anyio.to_thread.run_sync(broker.ping)
                     lifespan_app.state.job_service = JobSubmissionService(
-                        repository, broker, storage
+                        repository,
+                        broker,
+                        storage,
+                        resolved_settings,
                     )
                     runtime_status.mark_ready()
                     await logger.ainfo("job_api_ready")

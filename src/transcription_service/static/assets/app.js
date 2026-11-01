@@ -129,6 +129,10 @@ function friendlyError(payload, status) {
     no_audio_stream: "This video does not contain an audio track.",
     media_too_long: "This recording is longer than the current service limit.",
     upload_too_large: "This file is larger than the current upload limit.",
+    media_storage_full: "Local media storage is full. Please try again later.",
+    job_queue_full: "The transcription queue is full. Please try again later.",
+    idempotency_conflict: "This upload key was already used for a different recording.",
+    job_service_not_ready: "The job service is still starting. Please try again shortly.",
     invalid_language: "Choose Auto-detect, Hebrew, or English and try again.",
     transcription_failed: "The recording could not be transcribed. Please try again.",
   };

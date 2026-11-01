@@ -6,8 +6,8 @@ transcription produced by an open multilingual Whisper model from Hugging Face.
 The service supports a durable asynchronous workflow in Docker Compose and a compatibility
 synchronous workflow for native development. Compose runs the API, an independent inference
 worker, Redis, and PostgreSQL entirely on the local machine—no hosted service or subscription is
-required. See [`docs/architecture-plan.html`](docs/architecture-plan.html) for completed Phase 6
-and the ordered reliability and media roadmap.
+required. See [`docs/architecture-plan.html`](docs/architecture-plan.html) for completed Phases 6–7
+and the ordered media/product roadmap.
 
 ## Current capabilities
 
@@ -25,11 +25,17 @@ and the ordered reliability and media roadmap.
 - Accept uploads durably with `202 Accepted`, then expose job status and result resources.
 - Keep accepted jobs and completed results across independent API and worker restarts in local
   PostgreSQL; persist queued media and the Redis queue in named Docker volumes.
-- Run model inference only in an independent worker when asynchronous mode is enabled.
+- Run every asynchronous attempt in a terminable child process with a hard deadline.
+- Retry transient failures with bounded exponential backoff, recover expired worker leases, and use
+  atomic PostgreSQL claims so multiple workers cannot execute the same attempt concurrently.
+- Support `Idempotency-Key` and SHA-256 result reuse keyed by media, model revision, language,
+  audio mode, and model profile.
+- Retain failed media for 24 hours and completed JSON results for seven days by default, then mark
+  jobs expired before deleting artifacts.
 - Enforce configurable file-size, media-duration, queue-timeout, and inference-concurrency limits.
-- Expose liveness, readiness, and generated OpenAPI documentation.
-- Delete successfully processed source media. Configurable retention and result expiry arrive in
-  Phase 7; `docker compose down --volumes` deliberately removes all local durable data.
+- Expose liveness, component-aware readiness, and generated OpenAPI documentation.
+- Delete successfully processed source media immediately. `docker compose down --volumes`
+  deliberately removes all local durable data.
 
 ## Architecture
 
@@ -43,10 +49,13 @@ Browser / curl → bounded API upload → media volume → PostgreSQL job
                                                          └→ PostgreSQL result
 ```
 
-Docker Compose enables asynchronous mode. The API persists media and job state before enqueueing,
-returns promptly with `202`, and never loads Whisper. The worker owns PyAV validation, model loading,
-and inference. PostgreSQL is authoritative for state and results; Redis is the durable handoff queue;
-generated media keys—not client filenames—address files on a shared named volume.
+Docker Compose enables asynchronous mode. The API hashes and persists media and job state before
+enqueueing, returns promptly with `202`, and never loads Whisper. A worker supervisor atomically
+claims jobs and launches a fresh child process for PyAV validation, model loading, and inference.
+The supervisor can terminate that child at the configured deadline without killing the queue
+consumer. PostgreSQL is authoritative for state, attempts, leases, expiry, and results; Redis is the
+durable handoff queue and worker-heartbeat channel; generated media keys—not client filenames—address
+files on a shared named volume.
 
 Native mode keeps the original synchronous path for focused development and real-model smoke tests.
 There the default model loads during API startup, blocking validation/inference runs off the HTTP
@@ -68,9 +77,10 @@ repository root, start the CPU-first service:
 docker compose up --build
 ```
 
-Compose starts `api`, `worker`, `postgres`, and `redis`. On first startup, the worker downloads the
-pinned model (about 500 MB) into a named Docker volume. The download is separate from the image and
-is reused on later starts. Once `/health/ready` succeeds, open <http://localhost:8000/>. Stop the
+Compose starts `api`, `worker`, `postgres`, and `redis`. The first submitted job downloads the pinned
+model (about 500 MB) into a named Docker volume. The download is separate from the image and is
+reused by later attempts. `/health/ready` checks the API, PostgreSQL, Redis, and a live worker
+heartbeat without loading the model. Once it succeeds, open <http://localhost:8000/>. Stop the
 foreground stack with `Ctrl+C`; all named volumes remain available. To run detached instead, use
 `docker compose up --build -d`, follow logs with `docker compose logs -f api worker`, and stop with
 `docker compose down`.
@@ -139,12 +149,18 @@ Example:
 
 ```bash
 curl --fail \
+  -H "Idempotency-Key: example-upload-001" \
   -F "file=@/absolute/path/to/sample.wav" \
   -F "language=he" \
   -F "audio_mode=speech" \
   -F "model_profile=faster" \
   http://localhost:8000/v1/transcriptions
 ```
+
+`Idempotency-Key` is optional. Reusing it with the same media and options returns the existing job;
+reusing it for a different request returns `409 idempotency_conflict`. Even without the header, a
+matching SHA-256, model revision, language, audio mode, and model profile reuses active work or an
+unexpired successful result.
 
 In Docker Compose, this returns `202 Accepted`, sets `Location` to the status resource, and returns
 both polling URLs:
@@ -233,6 +249,14 @@ preserved and returned the same PostgreSQL-backed result. Redis and PostgreSQL h
 the API did not load a model, and the worker reused the existing model-cache volume. Port `8002` was
 again used only to avoid the already-running native development server.
 
+Phase 7 verification on 1 November 2026 passed Ruff, mypy, all 80 fast tests, wheel packaging, and
+the migrated four-service Compose stack. A real isolated child completed English inference; the
+same request with an idempotency key and with hash-only deduplication reused its result without a
+second attempt; changed media with the same key returned `409`. A forced 0.2-second deadline made
+two attempts and ended with stable `job_timeout` state. Stopping the worker changed readiness to
+`503` after its heartbeat expired. With two worker supervisors, a real job completed with exactly
+one atomic claim and one attempt. Existing Phase 6 data survived the schema migration.
+
 ## Configuration
 
 All settings use the `TRANSCRIPTION_` environment prefix. Defaults are listed in `.env.example`.
@@ -256,6 +280,17 @@ All settings use the `TRANSCRIPTION_` environment prefix. Defaults are listed in
 | `TRANSCRIPTION_REDIS_URL` | Compose Redis URL | Durable job broker |
 | `TRANSCRIPTION_REDIS_QUEUE_NAME` | `transcription:jobs` | Redis queue key |
 | `TRANSCRIPTION_MEDIA_STORAGE_PATH` | `/data/media` | Generated-key media directory shared by API and worker |
+| `TRANSCRIPTION_MAX_STORED_MEDIA_BYTES` | `5368709120` | 5 GiB local queued/failed-media budget |
+| `TRANSCRIPTION_MAX_PENDING_JOBS` | `100` | Atomic queued-plus-running admission limit |
+| `TRANSCRIPTION_JOB_MAX_ATTEMPTS` | `3` | Maximum attempts before terminal failure |
+| `TRANSCRIPTION_JOB_RETRY_BACKOFF_SECONDS` | `5` | Initial exponential retry delay |
+| `TRANSCRIPTION_JOB_TIMEOUT_SECONDS` | `1800` | Hard wall-clock deadline per child process |
+| `TRANSCRIPTION_JOB_LEASE_SECONDS` | `30` | Renewable claim lease; expiry enables crash recovery |
+| `TRANSCRIPTION_FAILED_MEDIA_RETENTION_SECONDS` | `86400` | Retain failed source media for diagnosis |
+| `TRANSCRIPTION_RESULT_RETENTION_SECONDS` | `604800` | Keep successful JSON result before expiry |
+| `TRANSCRIPTION_CLEANUP_INTERVAL_SECONDS` | `900` | Expiry and artifact-cleanup cadence |
+| `TRANSCRIPTION_WORKER_POLL_SECONDS` | `2` | Queue poll and due-job dispatch cadence |
+| `TRANSCRIPTION_WORKER_HEARTBEAT_TTL_SECONDS` | `15` | Readiness heartbeat lifetime |
 
 ## Dependency compatibility note
 
@@ -325,8 +360,8 @@ at revision `edaa852ec7e145841d8ffdb056a99866b5f0a478`. Clients cannot supply ar
 revisions; operators configure those through environment variables. Both profiles remain independent
 of `audio_mode`, and responses identify the model actually used.
 
-The default model stays in memory. The larger model is downloaded/loaded on its first selected
-request, in a worker thread, and then cached in memory until process shutdown. A lock prevents
+In native synchronous mode, the default model stays in memory. The larger model is downloaded/loaded
+on its first selected request, in a worker thread, and then cached until process shutdown. A lock prevents
 duplicate concurrent initialization. Loading and inference share the existing semaphore and queue
 timeout, so first-use loading occupies an inference slot. At most two model instances are retained
 per process; memory use increases after selecting the larger option. Both use the same disk cache,
@@ -338,6 +373,11 @@ This trades higher RAM use after first selection for fast repeated use and prese
 Evicting models on every selection would reduce resident memory but cause repeated loading and
 model-switch races. Revisit the cache policy for memory-constrained deployments or a larger model
 catalog; separate inference workers are preferable at that scale.
+
+In asynchronous mode, the same registry and profile rules run inside each isolated attempt process.
+Disk weights remain cached, but process-local model instances are released after each attempt. This
+is intentionally slower than a permanent model process in exchange for enforceable deadlines and
+clean memory reclamation.
 
 The UI deliberately says “Larger model”, not “Higher accuracy”. On the same 10.3-second Hebrew song
 clip, small took 15.2 seconds and produced garbled words; large-v3 took 21.5 seconds and returned
@@ -359,6 +399,45 @@ while Redis handles queue delivery and a generated-key media volume bridges API 
 services are local containers with named volumes, not managed subscriptions. Keeping persistence
 behind `JobRepository` and `MediaStore` protocols preserves the original use case and leaves room
 for S3-compatible media storage or a managed database at multi-host scale.
+
+### At-least-once delivery with atomic leased claims
+
+Redis delivers job IDs, but PostgreSQL owns the state machine. A conditional `queued → running`
+update increments the attempt count and installs a renewable lease in one statement. Duplicate
+Redis deliveries and competing supervisors are harmless because only one claim succeeds. A worker
+crash lets the lease expire; another supervisor returns the job to `queued`, unless its attempt
+budget is exhausted. A periodic database scan also redispatches due rows, closing the narrow gap
+between a committed job/retry and Redis enqueueing.
+
+Transient process/inference failures retry up to three attempts by default with exponential backoff.
+Typed media and request errors are terminal immediately. The API exposes attempts, maximum attempts,
+next retry time, stable terminal code/message, and expiry. Delivery is at least once: a crash after
+native work but before committing its result can repeat the work, but never concurrently under a
+valid lease.
+
+### Hard deadlines through disposable child processes
+
+An asyncio timeout cannot stop C/C++ codec or CTranslate2 work safely. The supervisor therefore runs
+one attempt with `python -m transcription_service.attempt`, renews its lease while waiting, and sends
+terminate/kill when the wall-clock deadline is exceeded. Timeout is a retryable `job_timeout`; after
+the final attempt it becomes the durable terminal error. The trade-off is loading model state in
+each child. The Hugging Face volume avoids network downloads, but repeated process startup still
+adds latency. A future GPU service could preserve warm model processes only if it also provides an
+equally strong external cancellation boundary.
+
+### Idempotency, hash caching, and retention
+
+The API hashes media while writing it once to generated-key storage. Repository advisory locks make
+the decision atomic: an `Idempotency-Key` returns its original job when request identity matches and
+returns `409` when it does not; otherwise an active or successful unexpired job with the same SHA-256,
+model revision, language, audio mode, and model profile is reused. Failed and expired results are not
+cache hits.
+
+Successful source media is deleted immediately and its JSON result expires after seven days by
+default. Terminal-failure media is retained for 24 hours for local diagnosis. Cleanup first changes
+the authoritative row to `expired` and clears its result, then removes any media artifact. Job
+tombstones and idempotency keys remain so clients receive stable status; eventual tombstone deletion
+requires a separate product policy.
 
 ### Synchronous, bounded requests
 
@@ -390,18 +469,20 @@ requires no managed service or subscription. Uploaded media lives on a named Doc
 `MediaStore` interface; S3-compatible storage remains a deployment option, not a local requirement.
 An in-process background task remains rejected because a process restart would lose accepted work.
 
-### One inference at a time by default
+### Explicit inference capacity and process isolation
 
-The default pipeline concurrency is one to keep CPU and model memory use predictable. Admitted
-requests wait up to the configured queue timeout and then receive `503 model_busy` plus
-`Retry-After`. Media decoding, lazy loading, and inference all occupy that slot and run in a worker
-thread. A cancelled caller retains its stream and slot until the native worker finishes, because a
-Python task cancellation cannot safely stop a native decoder or inference thread. Processing time
-includes validation, loading, and inference; it excludes upload and queue wait.
+Native synchronous mode keeps one pipeline slot by default. Admitted requests wait up to the
+configured queue timeout and then receive `503 model_busy` plus `Retry-After`. Media validation,
+lazy loading, and inference all occupy that slot in a worker thread. A cancelled caller retains its
+stream and slot until the native work finishes because Python cannot safely kill that thread.
 
-Run one Uvicorn worker by default. Multiple workers each load a separate model and multiply memory
-usage. A future GPU deployment should normally run one worker process per assigned GPU and scale
-workers explicitly.
+Compose uses one worker supervisor by default. It atomically claims one job, then starts a child
+process for the complete native pipeline. The supervisor renews both its job lease and readiness
+heartbeat while waiting. At the deadline it terminates the child, records `job_timeout`, and retries
+within the configured attempt budget. Each attempt reloads the model into a fresh process, so hard
+termination and memory reclamation cost startup latency; the named Hugging Face cache avoids another
+network download. Scale supervisors explicitly according to CPU/GPU and memory capacity. PostgreSQL
+claims prevent two supervisors from running the same attempt concurrently.
 
 ### PyAV for media handling
 
@@ -463,11 +544,13 @@ Expected status codes include:
 | Status | Meaning |
 | --- | --- |
 | `400` | Empty or malformed request |
+| `409` | Idempotency key conflict or result requested before completion |
 | `413` | Upload or media duration exceeds configured limits |
 | `415` | Unsupported or undecodable media |
 | `422` | Invalid language/audio mode or missing audio stream |
 | `500` | Sanitized model/inference failure |
-| `503` | Model unavailable, upload admission full, or inference queue timeout |
+| `503` | Model/job infrastructure unavailable, worker heartbeat absent, or admission full |
+| `507` | Configured local media-storage budget exhausted |
 
 Internal exception text, stack traces, and local paths are logged server-side and are not returned
 to clients. Every response includes `X-Request-ID` for correlation.
@@ -491,17 +574,17 @@ could justify a separately deployed frontend and its added build and deployment 
 The Docker image installs the exact locked Python environment, runs application processes as an
 unprivileged user, and keeps model weights out of the image. Compose uses separate named volumes for
 the Hugging Face cache, queued media, PostgreSQL data, and Redis AOF persistence. The API uses one
-Uvicorn worker and does not load a model; one independent inference worker loads and reuses the
-default model. The port binds to localhost, and both application containers drop Linux capabilities
-and have read-only root filesystems.
+Uvicorn worker and does not load a model; the worker supervisor starts a bounded child per attempt.
+The port binds to localhost, and both application containers drop Linux capabilities and have
+read-only root filesystems.
 
 This keeps rebuilds smaller than baking roughly 500 MB of weights into every image and keeps local
 startup convenient on CPU-only machines. Alternatives include baking model weights into an image
 for an offline deployment, or using a bind mount for a host-managed cache; those choices trade
 larger image distribution or host-specific permissions for their respective operational benefits.
 For multiple hosts, move media behind an S3-compatible `MediaStore`, use shared managed equivalents
-for PostgreSQL/Redis if desired, and warm each worker's model cache. Phase 7 adds explicit retention
-before this local durable stack should be exposed as a long-running public service.
+for PostgreSQL/Redis if desired, and warm each worker's model cache. Authentication, authorization,
+and ingress rate limits remain required before public exposure.
 
 The base image is pinned to the maintained Python 3.12 Bookworm line rather than an immutable
 digest, so rebuilding can pick up upstream security fixes. A release deployment that requires
@@ -518,9 +601,9 @@ rule was removed and CI now also runs `make package`.
 
 ## Implementation roadmap
 
-Phase 1 below is implemented as repository Phase 6. Phases 2 and 3 remain ordered work. The goal is
-to meet the backend-interview requirements while keeping the complete development and review
-environment local and reproducible with one Docker Compose command.
+Phases 1 and 2 below are implemented as repository Phases 6 and 7. Phase 3 remains ordered work.
+The goal is to meet the backend-interview requirements while keeping the complete development and
+review environment local and reproducible with one Docker Compose command.
 
 ### Phase 1 — Local durable asynchronous jobs (implemented)
 
@@ -537,7 +620,7 @@ environment local and reproducible with one Docker Compose command.
 - Add integration tests plus a Compose smoke test that restart API and worker and prove accepted work
   and completed results survive process restarts.
 
-### Phase 2 — Reliable job execution and lifecycle (next)
+### Phase 2 — Reliable job execution and lifecycle (implemented)
 
 - Add bounded retries with attempt counts, backoff, stable failure codes, and a dead-letter or
   terminal-failure policy.
@@ -568,22 +651,23 @@ metrics. These remain useful scaling or product discussions, not prerequisites f
 
 ## Current limitations and next steps
 
-- Durable jobs currently have one delivery attempt. Bounded retries, hard process deadlines,
-  idempotency/hash caching, abandoned-claim recovery, retention, cleanup, and worker-aware readiness
-  are Phase 7.
+- Job records remain after their media/result payload expires so status can report `expired` and
+  idempotency keys remain stable. A later account/history product should define archival or eventual
+  tombstone deletion separately.
 - Only the first audio stream in a video container is transcribed; the API does not yet expose audio
   track selection.
 - There is no authentication or rate limiting. Do not expose this service directly to an untrusted
   public network in its current form.
+- Hash caching is deployment-wide because there are no users yet. If authentication is added, include
+  tenant/authorization scope in both the idempotency uniqueness rule and cache identity.
 - Automatic language detection and Hebrew/English code-switching are model-dependent and may be
   less accurate than selecting the dominant language explicitly.
 - Music mode processes the full audio track and is therefore slower than speech mode.
-- Docker uses CPU inference and a single worker. A production GPU or multi-replica deployment needs
+- Docker uses CPU inference and one supervisor by default. A production GPU or multi-replica deployment needs
   deployment-specific resource allocation, scaling, and model-cache warming.
-- Native decoding/inference has no hard execution deadline. Compose moves it out of the API but the
-  Phase 6 worker still performs native work in its long-lived process. Phase 7 adds per-attempt
-  subprocess isolation and hard termination; public deployment also needs ingress timeouts,
-  authentication, and request-rate limits.
+- Native synchronous decoding/inference still has no hard execution deadline; hard subprocess
+  termination applies to asynchronous Compose jobs. Public deployment also needs ingress timeouts,
+  authentication, authorization, and request-rate limits.
 
 ## Updating this decision record
 

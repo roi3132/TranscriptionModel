@@ -49,6 +49,17 @@ class Settings(BaseSettings):
     redis_url: str = "redis://redis:6379/0"
     redis_queue_name: str = "transcription:jobs"
     media_storage_path: Path = Path("/data/media")
+    max_stored_media_bytes: int = Field(default=5 * 1024 * 1024 * 1024, gt=0)
+    max_pending_jobs: int = Field(default=100, gt=0)
+    job_max_attempts: int = Field(default=3, gt=0)
+    job_retry_backoff_seconds: float = Field(default=5, ge=0)
+    job_timeout_seconds: float = Field(default=30 * 60, gt=0)
+    job_lease_seconds: int = Field(default=30, gt=0)
+    failed_media_retention_seconds: int = Field(default=24 * 60 * 60, gt=0)
+    result_retention_seconds: int = Field(default=7 * 24 * 60 * 60, gt=0)
+    cleanup_interval_seconds: int = Field(default=15 * 60, gt=0)
+    worker_poll_seconds: int = Field(default=2, gt=0)
+    worker_heartbeat_ttl_seconds: int = Field(default=15, gt=0)
 
 
 @lru_cache(maxsize=1)

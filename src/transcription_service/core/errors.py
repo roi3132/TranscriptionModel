@@ -153,6 +153,49 @@ class JobInfrastructureError(ApplicationError):
     default_message = "The transcription job service is unavailable."
 
 
+class JobServiceNotReadyError(ApplicationError):
+    """Raised when the database, broker, or worker is not ready."""
+
+    code = "job_service_not_ready"
+    status_code = HTTPStatus.SERVICE_UNAVAILABLE
+    default_message = "The transcription job service is not ready."
+
+
+class InvalidIdempotencyKeyError(ApplicationError):
+    """Raised when an idempotency key is unsafe or too long."""
+
+    code = "invalid_idempotency_key"
+    status_code = HTTPStatus.BAD_REQUEST
+    default_message = "The Idempotency-Key header is invalid."
+
+
+class IdempotencyConflictError(ApplicationError):
+    """Raised when a key is reused for a different request identity."""
+
+    code = "idempotency_conflict"
+    status_code = HTTPStatus.CONFLICT
+    default_message = "The Idempotency-Key was already used for a different transcription."
+
+
+class JobQueueFullError(ApplicationError):
+    """Raised when the configured number of active jobs is already admitted."""
+
+    code = "job_queue_full"
+    status_code = HTTPStatus.SERVICE_UNAVAILABLE
+    default_message = "The transcription queue is full. Try again later."
+
+    def __init__(self) -> None:
+        super().__init__(headers={"Retry-After": "5"})
+
+
+class MediaStorageFullError(ApplicationError):
+    """Raised when retained uploads have exhausted the configured local budget."""
+
+    code = "media_storage_full"
+    status_code = HTTPStatus.INSUFFICIENT_STORAGE
+    default_message = "The transcription media store is full. Try again later."
+
+
 def _request_id(request: Request) -> str:
     return getattr(request.state, "request_id", "unknown")
 

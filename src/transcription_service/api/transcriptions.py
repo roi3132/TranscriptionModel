@@ -7,12 +7,13 @@ from typing import Annotated, BinaryIO
 from uuid import UUID
 
 import anyio
-from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Header, Request, UploadFile
 from fastapi.responses import JSONResponse
 
 from transcription_service.api.uploads import BoundedUploadRoute
 from transcription_service.core.errors import (
     EmptyUploadError,
+    InvalidIdempotencyKeyError,
     InvalidLanguageError,
     JobNotFoundError,
     JobResultNotReadyError,
@@ -38,6 +39,7 @@ router = APIRouter(
     prefix="/transcriptions", tags=["transcriptions"], route_class=BoundedUploadRoute
 )
 LANGUAGE_CODE_PATTERN = re.compile(r"^[a-z]{2,3}$")
+IDEMPOTENCY_KEY_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 
 
 def transcription_service(request: Request) -> TranscriptionService | None:
@@ -76,6 +78,15 @@ def _normalized_language(value: str) -> str | None:
     return normalized
 
 
+def _normalized_idempotency_key(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip()
+    if not IDEMPOTENCY_KEY_PATTERN.fullmatch(normalized):
+        raise InvalidIdempotencyKeyError
+    return normalized
+
+
 def _stream_size(media: BinaryIO) -> int:
     media.seek(0, 2)
     size = media.tell()
@@ -93,6 +104,8 @@ def _stream_size(media: BinaryIO) -> int:
         HTTPStatus.UNPROCESSABLE_ENTITY: {"model": ErrorResponse},
         HTTPStatus.INTERNAL_SERVER_ERROR: {"model": ErrorResponse},
         HTTPStatus.SERVICE_UNAVAILABLE: {"model": ErrorResponse},
+        HTTPStatus.CONFLICT: {"model": ErrorResponse},
+        HTTPStatus.INSUFFICIENT_STORAGE: {"model": ErrorResponse},
         HTTPStatus.ACCEPTED: {"model": JobAcceptedResponse},
     },
     summary="Transcribe an audio or video file",
@@ -113,6 +126,7 @@ async def create_transcription(
         ModelProfile,
         Form(description="'faster' uses the small model; 'larger' lazily loads large-v3"),
     ] = ModelProfile.FASTER,
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ) -> TranscriptionResponse | JSONResponse:
     """Complete synchronously or accept a durable job, according to deployment mode."""
 
@@ -135,12 +149,13 @@ async def create_transcription(
             language=normalized_language,
             audio_mode=audio_mode,
             model_profile=model_profile,
+            idempotency_key=_normalized_idempotency_key(idempotency_key),
         )
         status_url = str(request.url_for("get_transcription_job", job_id=job.id))
         result_url = str(request.url_for("get_transcription_result", job_id=job.id))
         payload = JobAcceptedResponse(
             id=job.id,
-            status=JobStatus.QUEUED,
+            status=job.status,
             status_url=status_url,
             result_url=result_url,
         )
@@ -196,8 +211,14 @@ async def get_transcription_job(job_id: str, request: Request) -> JobStatusRespo
         status=job.status,
         created_at=job.created_at,
         updated_at=job.updated_at,
-        error_code=job.error_code,
-        error_message=job.error_message,
+        error_code=job.error_code if job.status is JobStatus.FAILED else None,
+        error_message=job.error_message if job.status is JobStatus.FAILED else None,
+        attempts=job.attempts,
+        max_attempts=job.max_attempts,
+        next_retry_at=(
+            job.available_at if job.status is JobStatus.QUEUED and job.attempts > 0 else None
+        ),
+        expires_at=job.expires_at,
         result_url=result_url,
     )
 
