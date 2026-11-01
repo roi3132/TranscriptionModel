@@ -8,9 +8,10 @@ The service accepts uploads asynchronously: submit a file, receive a durable job
 status, and download the result. Docker Compose runs the API, an independent inference worker,
 PostgreSQL, and Redis on your machine. No hosted service or subscription is required.
 
-![Completed Hebrew transcription with right-to-left text, timestamped segments, and copy and download controls](docs/images/transcription-result.png)
+![Completed English transcription with local playback, a highlighted timestamped segment, and the current model labels](docs/images/transcription-playback.jpg)
 
-Example result from a nine-second Hebrew recording using the default small model.
+Example result from the short synthetic English evaluation clip using Fast · Whisper Small.
+The original [Hebrew result preview](docs/images/transcription-result.png) is retained as historical evidence.
 
 ## Summary
 
@@ -89,7 +90,8 @@ its containers and volumes afterward. It does not download model weights or run 
 ## Supported workflow
 
 - Upload WAV, MP3, M4A/AAC, FLAC, OGG, Opus, MP4, MOV, WebM, or MKV.
-- Select a language or automatic detection, speech/music mode, and faster/larger model profile.
+- Select a language or automatic detection, speech/music mode, and Fast or Advanced model profile
+  (`faster`/`larger` in the API).
 - Receive `202 Accepted` with origin-relative status and result URLs.
 - Poll through `queued` and `running` to `succeeded`, `failed`, or `expired`.
 - Download a successful result as JSON, TXT, SRT, or VTT.

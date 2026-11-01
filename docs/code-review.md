@@ -80,10 +80,16 @@ scaling remain later deployment options.
 Run `make check test package` for formatting, lint, typing, fast regression tests, and wheel build.
 Use the [execution guide's real-model smoke command](execution-instructions.md#run-real-model-smoke-tests)
 against the Compose stack, and `make docker-smoke`
-for the basic container check. Fast CI must continue to avoid downloading model weights.
+for the basic container check. CI also runs real PostgreSQL/Redis adapter tests and a separate
+Docker build/readiness job; it does not download model weights.
 
-The latest local fast-suite run passed 78 tests with 78% coverage, Ruff formatting/lint, strict
-mypy, JavaScript syntax checking, and wheel packaging. Historical Phase 8 verification below used
+The latest full local run passed 93 tests with 83% coverage, including six real PostgreSQL/Redis
+tests. Ruff formatting/lint, strict mypy, JavaScript syntax, wheel packaging, and Docker readiness
+passed. Browser checks verified audio/video playback, timestamp seeking, segment highlighting,
+processing feedback, and reload recovery. The [small accuracy evaluation](evaluation/README.md)
+records reference-scored English/Hebrew synthetic clips and their limitations.
+
+The earlier fast-suite run passed 78 tests with 78% coverage. Historical Phase 8 verification below used
 70 focused tests with 82% coverage and a rebuilt four-service stack on local port 8002.
 
 Phase 5 verification on 1 November 2026 produced the following evidence:

@@ -253,11 +253,11 @@
 <body>
   <div class="page">
     <header class="hero">
-      <div class="eyebrow">Implementation handoff · Take-home assignment</div>
+      <div class="eyebrow">Historical implementation plan · Take-home assignment</div>
       <h1>Transcription Service</h1>
       <p class="lede">A decision-complete architecture and ordered delivery plan for a Python service that accepts media, transcribes Hebrew and English with an open Hugging Face model, and returns timestamped JSON.</p>
       <div class="meta" aria-label="Plan metadata">
-        <span class="pill"><strong>Status</strong> Durable reliability implemented · media scope next</span>
+        <span class="pill"><strong>Status</strong> Phases 0–8 completed · historical milestones</span>
         <span class="pill"><strong>Original budget</strong> 24 hours</span>
         <span class="pill"><strong>Default target</strong> CPU-only Docker</span>
         <span class="pill"><strong>Updated</strong> 1 November 2026</span>
@@ -282,6 +282,7 @@
       <main>
         <section id="brief">
           <h2>Handoff brief</h2>
+          <div class="callout"><strong>Historical plan:</strong> Estimates, phase checklists, and verification counts below preserve development milestones. Later improvements add local media playback, processing feedback, real infrastructure tests in CI, and a small accuracy evaluation. For the current implementation and verification, use the <a href="service-architecture.html">architecture reference</a>, <a href="execution-instructions.md">execution guide</a>, and <a href="../README.md">README</a>.</div>
           <p class="section-intro">Phases 0–8 are implemented. The local stack now covers durable jobs, reliability, explicit media normalization, resumable chunking, exports, and the minimal recovery-aware UI.</p>
           <div class="callout success"><strong>Primary outcome:</strong> A reviewer can clone the repository, run one Docker command, submit an audio or video file, receive a durable job ID, and retrieve a Hebrew or English transcription with timestamped segments after an independent worker completes it.</div>
           <div class="grid">
@@ -754,7 +755,7 @@ make smoke SAMPLES="en=/absolute/path/to/sample.mp3"
           <p style="margin-top:1rem">The public asynchronous flow is <code>POST → 202</code>, <code>GET /v1/transcriptions/{id}</code>, and <code>GET /v1/transcriptions/{id}/result</code>. The <code>Transcriber</code> boundary is reused inside the worker. Later, the <code>MediaStore</code> can target S3-compatible storage and workers can scale per GPU without changing the HTTP contract.</p>
         </section>
 
-        <p class="footer">This document is the implementation source of truth. If the implementation diverges, update the decision and rationale here and in the README.</p>
+        <p class="footer">Historical delivery plan. Current behavior, commands, and validation are maintained in the architecture reference, execution guide, and README; phase-specific evidence is preserved here.</p>
       </main>
     </div>
   </div>

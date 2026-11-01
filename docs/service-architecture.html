@@ -697,7 +697,7 @@ Timeout → terminate process group; kill if still alive after five seconds</cod
           </article>
           <article class="card">
             <h3>Model profiles</h3>
-            <p><code>faster</code> selects pinned Whisper small; <code>larger</code> selects pinned large-v3. Arbitrary model IDs are not accepted from clients.</p>
+            <p>The UI labels are Fast · Whisper Small and Advanced · Whisper Large v3. Their API values remain <code>faster</code> and <code>larger</code>, selecting the pinned small and large-v3 models. Arbitrary model IDs are not accepted from clients.</p>
           </article>
         </div>
 
@@ -812,8 +812,9 @@ Timeout → terminate process group; kill if still alive after five seconds</cod
       <section id="api">
         <h2>HTTP and browser: acceptance is not completion</h2>
         <p class="section-intro">
-          The browser is a buildless same-origin client. It uses the same API as curl, stores only
-          active polling URLs and a display filename, and resumes polling after a reload.
+          The browser is a buildless same-origin client. It uses the same API as curl and stores
+          active polling URLs, a display filename, the start time, and model profile for reload
+          recovery. Audio/video bytes are not stored in browser local storage.
         </p>
 
         <div class="table-wrap">
@@ -854,6 +855,17 @@ Timeout → terminate process group; kill if still alive after five seconds</cod
         </div>
 
         <p>Polling paths and <code>Location</code> are origin-relative. A reused job may already be running or succeeded. Request errors use the application envelope shown above; later decoding/inference errors are stored as job error fields. Host/origin middleware rejections can be plain text and early origin rejection precedes request-ID assignment.</p>
+
+        <div class="grid">
+          <article class="card">
+            <h3>Local playback and timestamps</h3>
+            <p><code>attachPlayback()</code> gives the native media player a local object URL. Timestamp buttons seek and play; <code>updatePlayback()</code> highlights the active segment. Replacing a file releases the old URL. After reload, users reselect the original recording for playback without uploading it again. Browser codec support can differ from server decoding.</p>
+          </article>
+          <article class="card">
+            <h3>Processing feedback</h3>
+            <p><code>startProgress()</code> and <code>finishProgress()</code> keep the spinner and elapsed timer active through upload and polling. Job status supplies queued/running state, attempt counts, and retry timing. The UI does not estimate a completion percentage, and terminal failures are not automatically labeled offline.</p>
+          </article>
+        </div>
 
         <p>
           <span class="pill">JSON</span><span class="pill">TXT</span><span class="pill">SRT</span><span class="pill">VTT</span>
@@ -1012,7 +1024,7 @@ Timeout → terminate process group; kill if still alive after five seconds</cod
 ├── <b>schemas/</b>                   HTTP response models
 ├── <b>core/</b>                      settings, errors, logging, rate limiting, status
 │   └── sandbox.py                   fail-closed OS restrictions and resource limits
-└── <b>static/</b>                    browser HTML, CSS, and polling/download JavaScript</code></pre>
+└── <b>static/</b>                    browser HTML, CSS, polling, playback, and downloads</code></pre>
 
         <div class="grid three">
           <article class="card">
@@ -1043,7 +1055,7 @@ Timeout → terminate process group; kill if still alive after five seconds</cod
               <tr><td><a href="../src/transcription_service/adapters/jobs.py"><code>adapters/jobs.py</code></a></td><td><code>PostgresJobRepository</code>, <code>RedisJobBroker</code>, <code>LocalMediaStore</code></td><td>SQL/migration and locking, Redis operations, private filesystem persistence. Schema/index changes start here; this is not an ORM-backed model layer.</td></tr>
               <tr><td><a href="../src/transcription_service/adapters/media.py"><code>adapters/media.py</code></a> / <a href="../src/transcription_service/adapters/faster_whisper.py"><code>adapters/faster_whisper.py</code></a></td><td><code>PyAvMediaNormalizer</code>, <code>FasterWhisperTranscriber</code></td><td>Vendor-specific decode/resample and model calls. The transcriber eagerly consumes the model's lazy segments and returns domain values.</td></tr>
               <tr><td><a href="../src/transcription_service/core/sandbox.py"><code>core/sandbox.py</code></a></td><td><code>restrict_attempt()</code></td><td>Platform-specific access policy and resource limits. Must execute before importing native inference/decoder libraries in the child.</td></tr>
-              <tr><td><a href="../src/transcription_service/static/assets/app.js"><code>static/assets/app.js</code></a> / <a href="../src/transcription_service/api/ui.py"><code>api/ui.py</code></a></td><td>Browser polling/reload recovery; <code>client_configuration()</code></td><td>Client experience and discovered endpoint/configuration. Server-side validation remains authoritative.</td></tr>
+              <tr><td><a href="../src/transcription_service/static/assets/app.js"><code>static/assets/app.js</code></a> / <a href="../src/transcription_service/api/ui.py"><code>api/ui.py</code></a></td><td>Polling/reload recovery, progress, local playback, timestamp seeking; <code>client_configuration()</code></td><td>Client experience and discovered endpoint/configuration. Server-side validation remains authoritative; playback uses local file bytes.</td></tr>
             </tbody>
           </table>
         </div>
@@ -1090,8 +1102,9 @@ CompletedTranscription → response-shaped result → JobExecutionResult → res
         <h2>Verification and a guide to changing the code</h2>
         <p class="section-intro">
           A useful architecture claim should point to both its implementation and its evidence.
-          These are the first tests to read or update; normal API tests use in-memory job adapters
-          and fake inference, so they do not by themselves prove real SQL, broker durability, or model accuracy.
+          These are the first tests to read or update. Fast API tests use in-memory job adapters;
+          the infrastructure suite uses real PostgreSQL and Redis. Both use deterministic inference
+          and do not measure model accuracy.
         </p>
         <div class="table-wrap">
           <table>
@@ -1099,21 +1112,25 @@ CompletedTranscription → response-shaped result → JobExecutionResult → res
             <tbody>
               <tr><td>Submission contract, option validation, polling</td><td><a href="../src/transcription_service/api/transcriptions.py">Routes</a>, <a href="../src/transcription_service/schemas/jobs.py">job schemas</a>, submission service</td><td><a href="../tests/integration/test_transcriptions.py">test_transcriptions.py</a>, <a href="../tests/integration/test_async_jobs.py">test_async_jobs.py</a></td></tr>
               <tr><td>Early byte/admission limits and receive cleanup</td><td><a href="../src/transcription_service/api/uploads.py">BoundedUploadRoute</a>, <a href="../src/transcription_service/core/config.py">Settings</a>, Compose resources</td><td><a href="../tests/integration/test_upload_limits.py">test_upload_limits.py</a>, slow-body checks in <a href="../tests/integration/test_security.py">test_security.py</a></td></tr>
-              <tr><td>Retries, key/hash reuse, leases, expiry, timeout</td><td><a href="../src/transcription_service/services/jobs.py">Lifecycle policy</a>, <a href="../src/transcription_service/services/execution.py">process runner</a>, repository SQL</td><td><a href="../tests/integration/test_job_reliability.py">test_job_reliability.py</a> checks policy with fakes and hard timeout with a controlled child. Real repository behavior also needs Compose checks.</td></tr>
+              <tr><td>Retries, key/hash reuse, leases, expiry, timeout</td><td><a href="../src/transcription_service/services/jobs.py">Lifecycle policy</a>, <a href="../src/transcription_service/services/execution.py">process runner</a>, repository SQL</td><td><a href="../tests/integration/test_job_reliability.py">test_job_reliability.py</a> checks policy and controlled-child deadlines. <a href="../tests/integration/test_infrastructure.py">test_infrastructure.py</a> covers real SQL/Redis behavior, concurrent claims, lease recovery, retention, and API-to-worker result persistence.</td></tr>
               <tr><td>Media formats, track selection, normalization</td><td><a href="../src/transcription_service/adapters/media.py">PyAvMediaNormalizer</a></td><td><a href="../tests/unit/test_media.py">test_media.py</a> exercises real PyAV with generated containers.</td></tr>
               <tr><td>Chunk retries, resume, timestamp assembly</td><td><a href="../src/transcription_service/services/transcription.py">TranscriptionService</a></td><td><a href="../tests/unit/test_transcription_service.py">test_transcription_service.py</a> injects controlled chunks/failures.</td></tr>
               <tr><td>Model parameters or model-version upgrades</td><td><a href="../src/transcription_service/adapters/faster_whisper.py">Model adapter</a>, settings, <a href="../pyproject.toml">dependency bounds</a>, lockfile</td><td><a href="../tests/unit/test_faster_whisper.py">test_faster_whisper.py</a> checks mapping/options; <a href="../scripts/smoke_media.py">smoke_media.py</a> exercises actual inference through HTTP.</td></tr>
               <tr><td>Sandbox, file privacy, Host/Origin rules</td><td><a href="../src/transcription_service/core/sandbox.py">OS policy</a>, main middleware, runner private files</td><td><a href="../tests/integration/test_security.py">test_security.py</a> plus <a href="../tests/sandbox_probe.py">sandbox_probe.py</a> on the target OS. CI runs the Linux probe.</td></tr>
               <tr><td>Exports or browser behavior</td><td><a href="../src/transcription_service/services/exports.py">render_result()</a>, <a href="../src/transcription_service/static/assets/app.js">app.js</a>, UI route</td><td><a href="../tests/unit/test_exports.py">test_exports.py</a>, <a href="../tests/integration/test_ui.py">test_ui.py</a>. Page/config checks are not a full browser end-to-end test.</td></tr>
+              <tr><td>Accuracy measurement</td><td><a href="../scripts/smoke_media.py">smoke_media.py</a> with <code>--reference-dir</code> and <code>--report</code></td><td><a href="../tests/unit/test_evaluation.py">test_evaluation.py</a> checks scoring. The <a href="evaluation/README.md">evaluation guide</a> records measured English/Hebrew synthetic-speech results, reference texts, and limitations.</td></tr>
             </tbody>
           </table>
         </div>
         <div class="callout">
-          <strong>Three checks, three meanings:</strong> fast tests validate deterministic behavior;
-          Compose readiness validates infrastructure/heartbeat; a real-model smoke validates native
-          loading and a completed sample. None is a transcription-accuracy benchmark. Use
-          <a href="execution-instructions.md#test-the-solution">Execution Instructions</a> for the commands
-          and <a href="trade-offs-and-assumptions.md">Trade-offs &amp; Assumptions</a> for known limits.
+          <strong>Verification boundaries:</strong> CI runs fast tests, real PostgreSQL/Redis tests,
+          the Linux sandbox probe, JavaScript syntax checks, wheel packaging, and a separate Docker
+          build/readiness job. It does not download models. Local browser checks cover playback,
+          seeking, highlighting, and reload recovery. Reference-scored inference is opt-in; two
+          synthetic clips are not a representative human-speech benchmark. Use
+          <a href="execution-instructions.md#test-the-solution">Execution Instructions</a> for commands,
+          <a href="evaluation/README.md">the evaluation guide</a> for measured results, and
+          <a href="trade-offs-and-assumptions.md">Trade-offs &amp; Assumptions</a> for known limits.
         </div>
       </section>
     </main>
