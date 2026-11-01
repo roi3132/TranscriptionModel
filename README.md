@@ -77,6 +77,11 @@ accuracy or prove the Linux sandbox works on the evaluation machine. The
 [testing guide](docs/execution-instructions.md#test-the-solution) separates fast checks, container
 readiness, sandbox verification, and real-model inference.
 
+GitHub Actions runs the quality checks and a separate Docker build/startup job on pushes,
+pull requests, and manual workflow runs. The Docker job starts all four services, waits for
+readiness, checks the published API and browser interface, prints logs on failure, and removes
+its containers and volumes afterward. It does not download model weights or run real inference.
+
 ## Supported workflow
 
 - Upload WAV, MP3, M4A/AAC, FLAC, OGG, Opus, MP4, MOV, WebM, or MKV.
