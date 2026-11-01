@@ -9,6 +9,7 @@ from typing import Any, ClassVar, cast
 from faster_whisper import WhisperModel
 
 from transcription_service.adapters.faster_whisper import FasterWhisperTranscriber
+from transcription_service.services.transcription import AudioMode
 
 
 @dataclass
@@ -24,9 +25,16 @@ class FakeWhisperModel:
     def __init__(self) -> None:
         self.generator_consumed = False
         self.received_language: str | None = None
+        self.received_vad_filter: bool | None = None
+        self.received_no_speech_threshold: float | str | None = "not-provided"
 
     def transcribe(self, media: Any, **options: Any) -> tuple[Iterable[FakeSegment], Any]:
         self.received_language = options["language"]
+        self.received_vad_filter = options["vad_filter"]
+        self.received_no_speech_threshold = options.get(
+            "no_speech_threshold",
+            "not-provided",
+        )
 
         def segments() -> Iterable[FakeSegment]:
             self.generator_consumed = True
@@ -44,13 +52,18 @@ def test_eagerly_consumes_segments_and_maps_result() -> None:
         cast(WhisperModel, model),
         model_id="test/model",
         beam_size=5,
-        vad_filter=True,
     )
 
-    result = adapter.transcribe(io.BytesIO(b"audio"), language="he")
+    result = adapter.transcribe(
+        io.BytesIO(b"audio"),
+        language="he",
+        audio_mode=AudioMode.SPEECH,
+    )
 
     assert model.generator_consumed
     assert model.received_language == "he"
+    assert model.received_vad_filter is True
+    assert model.received_no_speech_threshold == "not-provided"
     assert result.text == "שלום עולם"
     assert result.language == "he"
     assert result.language_probability == 0.95
@@ -60,3 +73,21 @@ def test_eagerly_consumes_segments_and_maps_result() -> None:
         (1.2, 2.0, "עולם"),
     ]
     assert adapter.supported_languages == frozenset({"en", "he"})
+
+
+def test_music_mode_disables_voice_activity_detection() -> None:
+    model = FakeWhisperModel()
+    adapter = FasterWhisperTranscriber(
+        cast(WhisperModel, model),
+        model_id="test/model",
+        beam_size=5,
+    )
+
+    adapter.transcribe(
+        io.BytesIO(b"music"),
+        language="he",
+        audio_mode=AudioMode.MUSIC,
+    )
+
+    assert model.received_vad_filter is False
+    assert model.received_no_speech_threshold is None

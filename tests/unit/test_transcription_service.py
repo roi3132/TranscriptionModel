@@ -10,6 +10,7 @@ import pytest
 from transcription_service.core.config import Settings
 from transcription_service.core.errors import ModelBusyError
 from transcription_service.services.transcription import (
+    AudioMode,
     MediaMetadata,
     SegmentResult,
     TranscriptionResult,
@@ -41,6 +42,7 @@ class BlockingTranscriber:
         media: BinaryIO,
         *,
         language: str | None,
+        audio_mode: AudioMode,
     ) -> TranscriptionResult:
         self.started.set()
         if not self.release.wait(timeout=2):
@@ -71,6 +73,7 @@ def test_rejects_second_request_when_inference_queue_times_out() -> None:
                 filename="first.wav",
                 content_type="audio/wav",
                 language="en",
+                audio_mode=AudioMode.SPEECH,
             )
         )
 
@@ -84,6 +87,7 @@ def test_rejects_second_request_when_inference_queue_times_out() -> None:
                     filename="second.wav",
                     content_type="audio/wav",
                     language="en",
+                    audio_mode=AudioMode.SPEECH,
                 )
             assert raised.value.headers == {"Retry-After": "1"}
         finally:

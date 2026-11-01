@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 from transcription_service.core.config import Settings
 from transcription_service.main import create_app
 from transcription_service.services.transcription import (
+    AudioMode,
     SegmentResult,
     TranscriptionResult,
 )
@@ -27,14 +28,17 @@ class FakeTranscriber:
 
     def __init__(self) -> None:
         self.requested_languages: list[str | None] = []
+        self.requested_audio_modes: list[AudioMode] = []
 
     def transcribe(
         self,
         media: BinaryIO,
         *,
         language: str | None,
+        audio_mode: AudioMode,
     ) -> TranscriptionResult:
         self.requested_languages.append(language)
+        self.requested_audio_modes.append(audio_mode)
         detected_language = language or "he"
         text = "שלום עולם" if detected_language == "he" else "Hello world"
         return TranscriptionResult(

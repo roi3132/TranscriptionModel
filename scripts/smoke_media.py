@@ -8,6 +8,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from transcription_service.main import create_app
+from transcription_service.services.transcription import AudioMode
 
 
 def _sample(value: str) -> tuple[str, Path]:
@@ -31,6 +32,12 @@ def main() -> None:
         metavar="LANGUAGE=PATH",
         help="audio/video sample and explicit Whisper language code",
     )
+    parser.add_argument(
+        "--audio-mode",
+        choices=[mode.value for mode in AudioMode],
+        default=AudioMode.SPEECH.value,
+        help="speech enables VAD; music processes the complete audio track",
+    )
     args = parser.parse_args()
 
     with TestClient(create_app()) as client:
@@ -44,7 +51,7 @@ def main() -> None:
                 response = client.post(
                     "/v1/transcriptions",
                     files={"file": (path.name, media, content_type)},
-                    data={"language": language},
+                    data={"language": language, "audio_mode": args.audio_mode},
                 )
             if response.status_code != 200:
                 raise SystemExit(f"{path.name} failed: {response.status_code} {response.text}")

@@ -14,6 +14,8 @@ Docker packaging, and CI are the next planned phases. See
 - Transcribe the first audio stream from a supported video container without a separate video path.
 - Transcribe Hebrew (`he`), English (`en`), or another Whisper-supported language.
 - Automatically detect the language with `language=auto`.
+- Choose `audio_mode=speech` for faster VAD-filtered processing or `audio_mode=music` to process the
+  complete audio track.
 - Return full text, detected-language confidence, media duration, processing time, and timestamped
   segments.
 - Enforce configurable file-size, media-duration, queue-timeout, and inference-concurrency limits.
@@ -97,6 +99,7 @@ Example:
 curl --fail \
   -F "file=@/absolute/path/to/sample.wav" \
   -F "language=he" \
+  -F "audio_mode=speech" \
   http://localhost:8000/v1/transcriptions
 ```
 
@@ -140,6 +143,8 @@ uv run python scripts/smoke_media.py \
   en=/absolute/path/to/video.mp4
 ```
 
+For a song or music-heavy recording, add `--audio-mode music`.
+
 The smoke test loads the configured Hugging Face model, waits for readiness, and sends every sample
 through the public HTTP endpoint. It is deliberately excluded from normal CI because it downloads
 large weights and its execution time depends on the available hardware.
@@ -155,7 +160,6 @@ All settings use the `TRANSCRIPTION_` environment prefix. Defaults are listed in
 | `TRANSCRIPTION_DEVICE` | `cpu` | CTranslate2 device: `cpu`, `cuda`, or `auto` |
 | `TRANSCRIPTION_COMPUTE_TYPE` | `int8` | CPU-friendly quantized inference |
 | `TRANSCRIPTION_BEAM_SIZE` | `5` | Beam-search quality/speed trade-off |
-| `TRANSCRIPTION_VAD_FILTER` | `true` | Remove silence for speech-oriented recordings; disable for music |
 | `TRANSCRIPTION_MAX_UPLOAD_BYTES` | `104857600` | 100 MiB file-size limit |
 | `TRANSCRIPTION_MAX_MEDIA_DURATION_SECONDS` | `900` | 15-minute synchronous limit |
 | `TRANSCRIPTION_MAX_CONCURRENT_TRANSCRIPTIONS` | `1` | Model inference slots per process |
@@ -277,6 +281,19 @@ a separate temporary file. A readable video without audio returns the typed `no_
 client error. Selecting among multiple audio tracks is deferred until a product requirement defines
 the desired user experience and API contract.
 
+### Speech and music modes instead of a VAD flag
+
+The public API exposes the product-level `audio_mode` values `speech` and `music`, rather than
+leaking faster-whisper's `vad_filter` implementation detail. `speech` is the default and enables
+voice activity detection for lower latency on ordinary spoken recordings. `music` disables VAD and
+Whisper's no-speech segment skipping, processing the complete audio track so music-heavy vocals are
+not discarded as non-speech.
+
+The service does not retry an empty speech result automatically. Such a retry would double the
+worst-case work and could make Whisper hallucinate text for genuinely silent media. The explicit
+mode keeps cost and behavior predictable, and the future browser UI will describe the trade-off in
+user-facing language.
+
 ### Fast tests plus an explicit real-model smoke test
 
 Unit and API tests must remain deterministic and fast, so they use a fake `Transcriber` while still
@@ -306,7 +323,7 @@ Expected status codes include:
 | `400` | Empty or malformed request |
 | `413` | Upload or media duration exceeds configured limits |
 | `415` | Unsupported or undecodable media |
-| `422` | Invalid language or missing audio stream |
+| `422` | Invalid language/audio mode or missing audio stream |
 | `500` | Sanitized model/inference failure |
 | `503` | Model unavailable or inference queue timeout |
 
@@ -325,10 +342,7 @@ to clients. Every response includes `X-Request-ID` for correlation.
   public network in its current form.
 - Automatic language detection and Hebrew/English code-switching are model-dependent and may be
   less accurate than selecting the dominant language explicitly.
-- Voice activity detection is enabled by default for efficient speech transcription. Music-heavy
-  vocals may be classified as non-speech and removed completely; set
-  `TRANSCRIPTION_VAD_FILTER=false`, restart the service, and select the dominant language explicitly
-  for songs. Disabling VAD processes the entire audio track and therefore increases latency.
+- Music mode processes the full audio track and is therefore slower than speech mode.
 
 ## Updating this decision record
 

@@ -3,6 +3,7 @@
 import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
+from enum import StrEnum
 from functools import partial
 from time import perf_counter
 from typing import BinaryIO, Protocol, runtime_checkable
@@ -22,6 +23,13 @@ from transcription_service.core.errors import (
 )
 
 logger = structlog.get_logger(__name__)
+
+
+class AudioMode(StrEnum):
+    """User-facing processing profile for the uploaded audio track."""
+
+    SPEECH = "speech"
+    MUSIC = "music"
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,6 +88,7 @@ class Transcriber(Protocol):
         media: BinaryIO,
         *,
         language: str | None,
+        audio_mode: AudioMode,
     ) -> TranscriptionResult:
         """Transcribe the current media stream position into timestamped text."""
         ...
@@ -122,6 +131,7 @@ class TranscriptionService:
         filename: str | None,
         content_type: str | None,
         language: str | None,
+        audio_mode: AudioMode,
     ) -> CompletedTranscription:
         """Validate an upload, wait for capacity, and execute inference off-loop."""
 
@@ -150,7 +160,12 @@ class TranscriptionService:
         try:
             media.seek(0)
             result = await anyio.to_thread.run_sync(
-                partial(self._transcriber.transcribe, media, language=language)
+                partial(
+                    self._transcriber.transcribe,
+                    media,
+                    language=language,
+                    audio_mode=audio_mode,
+                )
             )
         except ApplicationError:
             raise

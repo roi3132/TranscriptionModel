@@ -34,7 +34,6 @@ class Settings(BaseSettings):
     device: Literal["auto", "cpu", "cuda"] = "cpu"
     compute_type: str = "int8"
     beam_size: int = Field(default=5, gt=0)
-    vad_filter: bool = True
 
     max_upload_bytes: int = Field(default=100 * 1024 * 1024, gt=0)
     max_media_duration_seconds: float = Field(default=15 * 60, gt=0)

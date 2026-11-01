@@ -6,6 +6,7 @@ from faster_whisper import WhisperModel
 
 from transcription_service.core.config import Settings
 from transcription_service.services.transcription import (
+    AudioMode,
     SegmentResult,
     TranscriptionResult,
 )
@@ -20,12 +21,10 @@ class FasterWhisperTranscriber:
         *,
         model_id: str,
         beam_size: int,
-        vad_filter: bool,
     ) -> None:
         self._model = model
         self._model_id = model_id
         self._beam_size = beam_size
-        self._vad_filter = vad_filter
         self._supported_languages = frozenset(model.supported_languages)
 
     @classmethod
@@ -42,7 +41,6 @@ class FasterWhisperTranscriber:
             model,
             model_id=settings.model_id,
             beam_size=settings.beam_size,
-            vad_filter=settings.vad_filter,
         )
 
     @property
@@ -58,16 +56,19 @@ class FasterWhisperTranscriber:
         media: BinaryIO,
         *,
         language: str | None,
+        audio_mode: AudioMode,
     ) -> TranscriptionResult:
         """Run blocking inference and eagerly consume the lazy segment generator."""
 
         media.seek(0)
+        music_options = {"no_speech_threshold": None} if audio_mode is AudioMode.MUSIC else {}
         segments, info = self._model.transcribe(
             media,
             language=language,
             task="transcribe",
             beam_size=self._beam_size,
-            vad_filter=self._vad_filter,
+            vad_filter=audio_mode is AudioMode.SPEECH,
+            **music_options,
         )
         segment_results = tuple(
             SegmentResult(start=segment.start, end=segment.end, text=segment.text.strip())

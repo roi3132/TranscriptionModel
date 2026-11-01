@@ -368,6 +368,7 @@
               <tbody>
                 <tr><td><code>file</code></td><td>Yes</td><td>Audio in phase 1; audio or video from phase 2.</td></tr>
                 <tr><td><code>language</code></td><td>No</td><td><code>auto</code> by default; accept Whisper-supported language codes such as <code>he</code> and <code>en</code>.</td></tr>
+                <tr><td><code>audio_mode</code></td><td>No</td><td><code>speech</code> by default enables VAD; <code>music</code> processes the complete audio track.</td></tr>
               </tbody>
             </table>
             <pre><code>{
@@ -505,6 +506,7 @@
                 <label class="task"><input type="checkbox" data-task="2-2" checked><span>Have PyAV select the first audio stream and return a typed <code>no_audio_stream</code> error when absent.</span></label>
                 <label class="task"><input type="checkbox" data-task="2-3" checked><span>Add small synthetic fixtures for a video with audio, a video without audio, and a corrupt container.</span></label>
                 <label class="task"><input type="checkbox" data-task="2-4" checked><span>Verify duration limits and temporary-resource cleanup for video uploads.</span></label>
+                <label class="task"><input type="checkbox" data-task="2-5" checked><span>Expose typed <code>speech</code> and <code>music</code> audio modes while keeping the underlying VAD flag inside the model adapter.</span></label>
               </div>
               <div class="callout"><strong>Exit check:</strong> One MP4 and one WebM complete through the same endpoint; a silent/no-audio video returns the documented client error.</div>
             </div>

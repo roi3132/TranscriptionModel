@@ -14,7 +14,7 @@ from transcription_service.schemas.transcription import (
     TranscriptionResponse,
     TranscriptionSegment,
 )
-from transcription_service.services.transcription import TranscriptionService
+from transcription_service.services.transcription import AudioMode, TranscriptionService
 
 router = APIRouter(prefix="/transcriptions", tags=["transcriptions"])
 LANGUAGE_CODE_PATTERN = re.compile(r"^[a-z]{2,3}$")
@@ -71,6 +71,10 @@ async def create_transcription(
         str,
         Form(description="Whisper language code or 'auto' for detection"),
     ] = "auto",
+    audio_mode: Annotated[
+        AudioMode,
+        Form(description="Use 'speech' for VAD or 'music' to process the full audio track"),
+    ] = AudioMode.SPEECH,
 ) -> TranscriptionResponse:
     """Return a completed, timestamped transcription for one media upload."""
 
@@ -85,6 +89,7 @@ async def create_transcription(
             filename=file.filename,
             content_type=file.content_type,
             language=_normalized_language(language),
+            audio_mode=audio_mode,
         )
         return TranscriptionResponse(
             text=completed.result.text,

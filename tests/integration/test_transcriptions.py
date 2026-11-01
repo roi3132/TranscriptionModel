@@ -10,7 +10,7 @@ from starlette.datastructures import UploadFile
 from tests.conftest import FakeTranscriber
 from transcription_service.core.config import Settings
 from transcription_service.main import create_app
-from transcription_service.services.transcription import TranscriptionResult
+from transcription_service.services.transcription import AudioMode, TranscriptionResult
 
 
 def test_transcribes_hebrew_audio(
@@ -48,6 +48,38 @@ def test_auto_language_is_passed_to_model_as_none(
 
     assert response.status_code == 200
     assert fake_transcriber.requested_languages == [None]
+    assert [mode.value for mode in fake_transcriber.requested_audio_modes] == ["speech"]
+
+
+def test_music_mode_is_passed_to_model(
+    client: TestClient,
+    fake_transcriber: FakeTranscriber,
+    wav_factory: Callable[[float], bytes],
+) -> None:
+    response = client.post(
+        "/v1/transcriptions",
+        files={"file": ("song.wav", wav_factory(0.25), "audio/wav")},
+        data={"language": "he", "audio_mode": "music"},
+    )
+
+    assert response.status_code == 200
+    assert [mode.value for mode in fake_transcriber.requested_audio_modes] == ["music"]
+
+
+def test_rejects_invalid_audio_mode(
+    client: TestClient,
+    fake_transcriber: FakeTranscriber,
+    wav_factory: Callable[[float], bytes],
+) -> None:
+    response = client.post(
+        "/v1/transcriptions",
+        files={"file": ("sample.wav", wav_factory(0.25), "audio/wav")},
+        data={"audio_mode": "karaoke"},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "validation_error"
+    assert fake_transcriber.requested_audio_modes == []
 
 
 def test_rejects_language_not_supported_by_model(
@@ -267,6 +299,7 @@ def test_model_failure_is_sanitized(
             media: BinaryIO,
             *,
             language: str | None,
+            audio_mode: AudioMode,
         ) -> TranscriptionResult:
             raise RuntimeError("sensitive internal model error")
 
