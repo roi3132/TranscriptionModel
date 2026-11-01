@@ -18,9 +18,11 @@ const resultMeta = document.querySelector("#result-meta");
 const copyFeedback = document.querySelector("#copy-feedback");
 
 let latestTranscript = "";
+let latestResultUrl = "";
 let selectedFilename = "transcript";
 let isTranscribing = false;
 let clientConfig;
+const pendingJobStorageKey = "transcription-studio.pending-job";
 
 async function getClientConfig() {
   if (!clientConfig) {
@@ -67,6 +69,7 @@ function resetResult() {
   segmentList.replaceChildren();
   segmentsSection.hidden = true;
   latestTranscript = "";
+  latestResultUrl = "";
 }
 
 function formatTimestamp(seconds) {
@@ -122,8 +125,6 @@ function renderTranscript(result) {
 function friendlyError(payload, status) {
   const code = payload?.error?.code;
   const messages = {
-    model_not_ready: "The transcription model is still starting. Wait a moment and try again.",
-    model_busy: "The model is busy with another recording. Please try again shortly.",
     upload_busy: "The service is processing other uploads. Please try again shortly.",
     unsupported_media: "That file could not be read. Try a supported audio or video format.",
     no_audio_stream: "This video does not contain an audio track.",
@@ -133,6 +134,7 @@ function friendlyError(payload, status) {
     job_queue_full: "The transcription queue is full. Please try again later.",
     idempotency_conflict: "This upload key was already used for a different recording.",
     job_service_not_ready: "The job service is still starting. Please try again shortly.",
+    rate_limit_exceeded: "Too many uploads were submitted. Wait a moment and try again.",
     invalid_language: "Choose Auto-detect, Hebrew, or English and try again.",
     transcription_failed: "The recording could not be transcribed. Please try again.",
   };
@@ -147,14 +149,22 @@ async function waitForJob(accepted) {
   while (true) {
     const statusResponse = await fetch(accepted.status_url, { headers: { Accept: "application/json" } });
     const job = await statusResponse.json();
-    if (!statusResponse.ok) throw new Error(friendlyError(job, statusResponse.status));
+    if (!statusResponse.ok) {
+      if (statusResponse.status === 404 || statusResponse.status === 410) {
+        localStorage.removeItem(pendingJobStorageKey);
+      }
+      throw new Error(friendlyError(job, statusResponse.status));
+    }
     if (job.status === "succeeded") {
       const resultResponse = await fetch(accepted.result_url, { headers: { Accept: "application/json" } });
       const result = await resultResponse.json();
       if (!resultResponse.ok) throw new Error(friendlyError(result, resultResponse.status));
+      latestResultUrl = accepted.result_url;
+      localStorage.removeItem(pendingJobStorageKey);
       return result;
     }
     if (job.status === "failed" || job.status === "expired") {
+      localStorage.removeItem(pendingJobStorageKey);
       throw new Error(job.error_message || `The transcription job ${job.status}.`);
     }
     resultBadge.textContent = job.status.toUpperCase();
@@ -237,9 +247,12 @@ form.addEventListener("submit", async (event) => {
       return;
     }
 
-    if (response.status === 202) {
-      payload = await waitForJob(payload);
-    }
+    localStorage.setItem(pendingJobStorageKey, JSON.stringify({
+      status_url: payload.status_url,
+      result_url: payload.result_url,
+      filename: selectedFilename,
+    }));
+    payload = await waitForJob(payload);
     renderTranscript(payload);
     resultTitle.focus();
   } catch (error) {
@@ -265,16 +278,68 @@ document.querySelector("#copy-button").addEventListener("click", async () => {
   }
 });
 
-document.querySelector("#download-button").addEventListener("click", () => {
-  if (!latestTranscript) return;
-  const blob = new Blob([`${latestTranscript}\n`], { type: "text/plain;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = `${selectedFilename}.txt`;
-  link.click();
-  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+document.querySelector("#download-button").addEventListener("click", async () => {
+  if (!latestResultUrl) return;
+  const format = document.querySelector("#download-format").value;
+  copyFeedback.textContent = "Preparing download…";
+  try {
+    const response = await fetch(`${latestResultUrl}?format=${format}`);
+    if (!response.ok) {
+      const payload = await response.json();
+      throw new Error(friendlyError(payload, response.status));
+    }
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${selectedFilename}.${format}`;
+    link.click();
+    copyFeedback.textContent = `${format.toUpperCase()} download ready.`;
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch (error) {
+    copyFeedback.textContent = error.message || "The download could not be prepared.";
+  }
 });
+
+async function restorePendingJob() {
+  let pending;
+  try {
+    pending = JSON.parse(localStorage.getItem(pendingJobStorageKey) || "null");
+  } catch {
+    localStorage.removeItem(pendingJobStorageKey);
+    return;
+  }
+  if (!pending) return;
+  if (typeof pending.status_url !== "string" || typeof pending.result_url !== "string") {
+    localStorage.removeItem(pendingJobStorageKey);
+    return;
+  }
+
+  isTranscribing = true;
+  selectedFilename = pending.filename || "transcript";
+  resetResult();
+  loadingState.hidden = false;
+  resultTitle.textContent = "Recovering your transcription…";
+  resultBadge.textContent = "IN PROGRESS";
+  submitButton.disabled = true;
+  form.setAttribute("aria-busy", "true");
+  try {
+    const result = await waitForJob(pending);
+    loadingState.hidden = true;
+    renderTranscript(result);
+    resultTitle.focus();
+  } catch (error) {
+    loadingState.hidden = true;
+    resultError.textContent = error.message || "Could not recover the transcription job.";
+    resultError.hidden = false;
+    resultTitle.textContent = "Recovery needs attention";
+    resultBadge.textContent = "NEEDS ATTENTION";
+  } finally {
+    isTranscribing = false;
+    submitButton.disabled = !fileInput.files.length;
+    form.removeAttribute("aria-busy");
+  }
+}
 
 async function updateServiceStatus() {
   const status = document.querySelector("#service-status");
@@ -282,14 +347,14 @@ async function updateServiceStatus() {
   try {
     const response = await fetch("/health/ready", { headers: { Accept: "application/json" } });
     if (!response.ok) throw new Error("not ready");
-    const config = await getClientConfig();
     status.classList.add("is-ready");
     status.classList.remove("is-unavailable");
-    statusText.textContent = config.async_jobs_enabled ? "Job service ready" : "Model ready";
+    statusText.textContent = "Job service ready";
   } catch {
     status.classList.add("is-unavailable");
-    statusText.textContent = "Model unavailable";
+    statusText.textContent = "Job service unavailable";
   }
 }
 
 updateServiceStatus();
+restorePendingJob();

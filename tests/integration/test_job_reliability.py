@@ -77,7 +77,6 @@ class BlockingSuccessRunner:
 def _settings(settings: Settings, media_path: Path, **updates: object) -> Settings:
     return settings.model_copy(
         update={
-            "async_jobs_enabled": True,
             "media_storage_path": media_path,
             "job_retry_backoff_seconds": 0,
             **updates,

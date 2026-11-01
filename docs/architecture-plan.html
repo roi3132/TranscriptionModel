@@ -282,7 +282,7 @@
       <main>
         <section id="brief">
           <h2>Handoff brief</h2>
-          <p class="section-intro">Phases 0–7 are implemented. Phase 8 remains ordered work to close the remaining interview-scope media and product gaps.</p>
+          <p class="section-intro">Phases 0–8 are implemented. The local stack now covers durable jobs, reliability, explicit media normalization, resumable chunking, exports, and the minimal recovery-aware UI.</p>
           <div class="callout success"><strong>Primary outcome:</strong> A reviewer can clone the repository, run one Docker command, submit an audio or video file, receive a durable job ID, and retrieve a Hebrew or English transcription with timestamped segments after an independent worker completes it.</div>
           <div class="grid">
             <div class="note">
@@ -315,9 +315,9 @@
             <div class="decision"><div class="label">Inference runtime</div><div class="value">faster-whisper</div><div class="reason">CTranslate2-backed native inference with CPU int8 and GPU configuration options.</div></div>
             <div class="decision"><div class="label">Default model</div><div class="value">Systran/faster-whisper-small</div><div class="reason">Multilingual model supporting Hebrew (<code>he</code>) and English with practical CPU requirements.</div></div>
             <div class="decision"><div class="label">Persistence</div><div class="value">Local PostgreSQL + named volumes</div><div class="reason">Durable jobs justify persisted state, results, queued media, and explicit retention without requiring a cloud account.</div></div>
-            <div class="decision"><div class="label">Execution</div><div class="value">Redis + supervisor + child attempt</div><div class="reason">Compose keeps inference outside HTTP and makes the hard deadline enforceable; native mode retains the synchronous development path.</div></div>
+            <div class="decision"><div class="label">Execution</div><div class="value">Redis + supervisor + child attempt</div><div class="reason">The asynchronous-only contract keeps inference outside HTTP and makes the hard deadline enforceable.</div></div>
             <div class="decision"><div class="label">Package management</div><div class="value">uv + pyproject.toml</div><div class="reason">Fast reproducible setup and a committed transitive dependency lockfile.</div></div>
-            <div class="decision"><div class="label">Default limits</div><div class="value">100 MiB / 15 minutes</div><div class="reason">Configurable guardrails that keep synchronous CPU requests bounded.</div></div>
+            <div class="decision"><div class="label">Default limits</div><div class="value">100 MiB / 15 minutes</div><div class="reason">Configurable guardrails that keep upload storage and worker CPU bounded.</div></div>
             <div class="decision"><div class="label">Concurrency</div><div class="value">Atomic leased PostgreSQL claims</div><div class="reason">One attempt per supervisor by default; duplicate delivery and competing workers cannot execute the same attempt.</div></div>
           </div>
           <div class="callout success"><strong>Database decision implemented:</strong> PostgreSQL stores job state and result metadata locally; a named-volume <code>MediaStore</code> holds queued media. Redis is a local broker, not a subscription service.</div>
@@ -325,7 +325,7 @@
 
         <section id="architecture">
           <h2>Runtime architecture</h2>
-          <p class="section-intro">Native mode owns a loaded model in FastAPI. Compose keeps HTTP model-free: PostgreSQL owns job state, Redis hands off IDs, a supervisor owns reliability policy, and a disposable child owns one native inference attempt.</p>
+          <p class="section-intro">The API is model-free: PostgreSQL owns job state, Redis hands off IDs, a supervisor owns reliability policy, and a disposable child owns one native inference attempt.</p>
           <div class="architecture" role="img" aria-label="Client uploads multipart media to FastAPI, which validates it, passes it to a transcription service, then to the faster-whisper adapter and Hugging Face model, returning JSON.">
             <div class="node"><strong>Browser / curl</strong><span>multipart upload</span></div>
             <div class="arrow" aria-hidden="true">→</div>
@@ -346,14 +346,14 @@
             <li>Reject an obviously oversized request using <code>Content-Length</code> when present.</li>
             <li>Receive the upload through FastAPI <code>UploadFile</code>; never use the client filename as a path.</li>
             <li>Check the actual uploaded size and configured media allowlist.</li>
-            <li>Use PyAV to verify the container is readable and contains at least one audio stream; reset the file position afterward.</li>
-            <li>Acquire the inference semaphore with a configurable queue timeout.</li>
-            <li>Run blocking model inference in an AnyIO worker thread, not on the async event loop.</li>
-            <li>Fully consume faster-whisper's lazy segment generator and map it into application schemas.</li>
-            <li>Return UTF-8 JSON and close the upload in a <code>finally</code> block on success or error.</li>
+            <li>Persist and hash the upload, commit its PostgreSQL job, enqueue its ID, and return <code>202</code>.</li>
+            <li>The supervisor atomically claims the job and launches one terminable child process.</li>
+            <li>The child normalizes the first audio stream to 16 kHz mono chunks and loads only the selected model.</li>
+            <li>Fully consume faster-whisper's lazy segment generator, checkpoint chunks, and assemble the result.</li>
+            <li>Persist the result, delete successful source media, and serve status or exports independently.</li>
           </ol>
 
-          <div class="callout"><strong>Native model lifecycle:</strong> Load the model once in FastAPI's lifespan hook. Readiness is false until loading succeeds. Run a single Uvicorn worker because additional workers duplicate model memory.</div>
+          <div class="callout"><strong>Worker model lifecycle:</strong> Each isolated attempt loads the selected model from the shared Hugging Face cache. FastAPI never loads model weights; readiness depends on PostgreSQL, Redis, and a live worker heartbeat.</div>
           <div class="callout success"><strong>Durable lifecycle:</strong> Compose persists and hashes the upload before enqueueing. The supervisor atomically claims a renewable lease, launches a terminable child, retries transient failures, recovers stale claims, and expires retained artifacts. Readiness checks PostgreSQL, Redis, and a live worker heartbeat without invoking inference.</div>
         </section>
 
@@ -401,7 +401,7 @@
           </div>
           <div class="api-card">
             <h3><span class="method get">GET</span><code>/health/ready</code></h3>
-            <p>Native mode requires its model. Asynchronous mode checks PostgreSQL, Redis, and an unexpired worker heartbeat without invoking inference.</p>
+            <p>Checks PostgreSQL, Redis, and an unexpired worker heartbeat without invoking inference.</p>
           </div>
 
           <h3 style="margin-top:1.35rem">Error envelope</h3>
@@ -413,7 +413,7 @@
   }
 }</code></pre>
           <p>Log the exception and context server-side, but do not expose stack traces, local paths, or dependency error strings to clients.</p>
-          <div class="callout success"><strong>Phase 6 contract:</strong> In asynchronous mode, <code>POST /v1/transcriptions</code> returns <code>202 Accepted</code>, a job ID, and a <code>Location</code> header. <code>GET /v1/transcriptions/{job_id}</code> returns <code>queued</code>, <code>running</code>, <code>succeeded</code>, <code>failed</code>, or <code>expired</code>. <code>GET /v1/transcriptions/{job_id}/result</code> returns JSON; TXT, SRT, and VTT remain Phase 8.</div>
+          <div class="callout success"><strong>Implemented contract:</strong> <code>POST /v1/transcriptions</code> always returns <code>202 Accepted</code>, a job ID, and a <code>Location</code> header. <code>GET /v1/transcriptions/{job_id}</code> returns <code>queued</code>, <code>running</code>, <code>succeeded</code>, <code>failed</code>, or <code>expired</code>. <code>GET /v1/transcriptions/{job_id}/result</code> returns JSON by default and supports TXT, SRT, and VTT through the <code>format</code> query parameter.</div>
           <div class="callout success"><strong>Phase 7 contract:</strong> Status also reports attempts, maximum attempts, next retry time, terminal code/message, and expiry. Hash-equivalent active/successful jobs are reused; successful media is removed immediately; retained results and failed media become <code>expired</code> on schedule.</div>
         </section>
 
@@ -498,10 +498,10 @@
               <h3>Audio transcription vertical slice</h3>
               <div class="phase-meta">Estimated 7 hours · First usable product increment</div>
               <div class="tasks">
-                <label class="task"><input type="checkbox" data-task="1-1" checked><span>Load <code>Systran/faster-whisper-small</code> once during lifespan using CPU <code>int8</code> defaults.</span></label>
+                <label class="task"><input type="checkbox" data-task="1-1" checked><span>Load the selected faster-whisper model inside an isolated worker attempt using CPU <code>int8</code> defaults.</span></label>
                 <label class="task"><input type="checkbox" data-task="1-2" checked><span>Implement PyAV inspection for WAV, MP3, M4A/AAC, FLAC, and OGG/Opus; require an audio stream.</span></label>
                 <label class="task"><input type="checkbox" data-task="1-3" checked><span>Implement <code>POST /v1/transcriptions</code> with <code>auto</code>, <code>he</code>, and <code>en</code> support plus general valid Whisper language codes.</span></label>
-                <label class="task"><input type="checkbox" data-task="1-4" checked><span>Move blocking inference to a worker thread, limit concurrency with a semaphore, and consume all lazy segments.</span></label>
+                <label class="task"><input type="checkbox" data-task="1-4" checked><span>Move blocking inference into a worker child process, bound supervisors explicitly, and consume all lazy segments.</span></label>
                 <label class="task"><input type="checkbox" data-task="1-5" checked><span>Enforce upload and duration limits; always close the upload; map known decoding and inference failures.</span></label>
                 <label class="task"><input type="checkbox" data-task="1-6" checked><span>Test the route with a fake transcriber, synthetic audio fixtures, Hebrew Unicode output, failures, and cleanup.</span></label>
               </div>
@@ -537,7 +537,7 @@
                 <label class="task"><input type="checkbox" data-task="3-4" checked><span>Add copy-to-clipboard and download-as-text actions without adding a frontend build tool.</span></label>
               </div>
               <div class="callout"><strong>Exit check:</strong> Complete the flow using only the browser, test keyboard operation, and visually inspect both Hebrew RTL and English LTR output.</div>
-              <div class="note">Model selector addition: small remains loaded at startup. Large-v3 loads once on first selection inside the shared inference limit, then remains cached. At most two models reside in memory per process. First use can download several GB; keep the UI explicit about latency and the lack of guaranteed accuracy improvement.</div>
+              <div class="note">Model selector addition: the isolated worker attempt loads the selected profile and releases it when that child exits; the named Hugging Face volume keeps downloaded weights cached. First use of large-v3 can download several GB, so the UI remains explicit about latency and the lack of guaranteed accuracy improvement.</div>
             </div>
           </article>
 
@@ -551,7 +551,7 @@
                 <label class="task"><input type="checkbox" data-task="4-2" checked><span>Add Make targets for setup, run, check, test, real-model smoke test, and Docker smoke test.</span></label>
                 <label class="task"><input type="checkbox" data-task="4-3" checked><span>Add GitHub Actions for lint, formatting, typing, and fast tests; do not download model weights in normal CI.</span></label>
                 <label class="task"><input type="checkbox" data-task="4-4" checked><span>Write README quickstart, curl examples, configuration table, architecture, limits, assumptions, privacy behavior, and trade-offs.</span></label>
-                <label class="task"><input type="checkbox" data-task="4-5" checked><span>Document the asynchronous production evolution and why the take-home version intentionally has no database.</span></label>
+                <label class="task"><input type="checkbox" data-task="4-5" checked><span>Document the evolution to a durable asynchronous-only contract and why PostgreSQL is now required.</span></label>
               </div>
               <div class="callout"><strong>Exit check:</strong> A clean clone succeeds using only the README and <code>docker compose up --build</code>.</div>
               <div class="note">Review update: duplicate wheel asset inclusion was removed and CI now builds the wheel. Multipart bytes and admission are bounded before parsing; decoding and inference share capacity. See <code>docs/code-review.md</code> for findings and remaining boundaries. Docker runtime acceptance was completed on Apple Silicon on 1 November 2026.</div>
@@ -604,7 +604,8 @@
                 <label class="task"><input type="checkbox" data-task="7-5" checked><span>Add configurable media/job/result retention and a cleanup worker that marks jobs expired before deleting artifacts.</span></label>
                 <label class="task"><input type="checkbox" data-task="7-6" checked><span>Expose API, broker, database, and worker readiness without invoking inference during a health probe.</span></label>
               </div>
-              <div class="callout success"><strong>Exit check passed:</strong> 80 fast tests cover retryable and terminal failures, worker crashes, duplicate submissions, hard timeouts, cleanup, and concurrent claims. Real Compose checks proved schema migration, cache reuse/conflict, two timeout attempts, heartbeat-aware readiness, and one attempt with two competing supervisors.</div>
+              <div class="callout success"><strong>Exit check passed:</strong> 80 fast tests originally covered retryable and terminal failures, worker crashes, duplicate submissions, hard timeouts, cleanup, and concurrent claims. Real Compose checks proved schema migration, cache reuse/conflict, two timeout attempts, heartbeat-aware readiness, and one attempt with two competing supervisors.</div>
+              <div class="note"><strong>Async-only simplification · 1 November 2026:</strong> The synchronous compatibility branch and flag were removed. POST now always returns 202, FastAPI never loads a model, the browser always polls, and media/model errors become durable job failures. Ruff, mypy, 65 focused tests with 81% coverage, wheel packaging, a fresh image build, and four-service readiness on port 8002 pass.</div>
             </div>
           </article>
 
@@ -612,16 +613,16 @@
             <div class="phase-number">8</div>
             <div>
               <h3>Close the remaining interview-scope gaps</h3>
-              <div class="phase-meta">After phase 7 · Product value and explicit media behavior</div>
+              <div class="phase-meta">Implemented · Product value and explicit media behavior</div>
               <div class="tasks">
-                <label class="task"><input type="checkbox" data-task="8-1"><span>Add and test an explicit media normalizer that produces 16 kHz mono audio before inference.</span></label>
-                <label class="task"><input type="checkbox" data-task="8-2"><span>Define silent-input behavior as a deliberate <code>no_speech_detected</code> result or warning and cover it in API and worker tests.</span></label>
-                <label class="task"><input type="checkbox" data-task="8-3"><span>Render completed results as JSON, TXT, SRT, and VTT from the shared timestamped segment model.</span></label>
-                <label class="task"><input type="checkbox" data-task="8-4"><span>Add local rate limiting and document the reverse-proxy/API-key boundary for public deployment.</span></label>
-                <label class="task"><input type="checkbox" data-task="8-5"><span>Add resumable application-level chunking for long recordings, including per-chunk retry and ordered result assembly.</span></label>
-                <label class="task"><input type="checkbox" data-task="8-6"><span>Update the UI to submit a job, poll status, recover after reload, and download each supported result format.</span></label>
+                <label class="task"><input type="checkbox" data-task="8-1" checked><span>Add and test an explicit media normalizer that produces 16 kHz mono audio before inference.</span></label>
+                <label class="task"><input type="checkbox" data-task="8-2" checked><span>Define silent-input behavior as a deliberate <code>no_speech_detected</code> result or warning and cover it in API and worker tests.</span></label>
+                <label class="task"><input type="checkbox" data-task="8-3" checked><span>Render completed results as JSON, TXT, SRT, and VTT from the shared timestamped segment model.</span></label>
+                <label class="task"><input type="checkbox" data-task="8-4" checked><span>Add local rate limiting and document the reverse-proxy/API-key boundary for public deployment.</span></label>
+                <label class="task"><input type="checkbox" data-task="8-5" checked><span>Add resumable application-level chunking for long recordings, including per-chunk retry and ordered result assembly.</span></label>
+                <label class="task"><input type="checkbox" data-task="8-6" checked><span>Update the UI to submit a job, poll status, recover after reload, and download each supported result format.</span></label>
               </div>
-              <div class="callout"><strong>Exit check:</strong> A long-file browser upload completes without holding one HTTP request open; silence is unambiguous; normalized media and every export format have automated tests.</div>
+              <div class="callout success"><strong>Exit check passed:</strong> POST remains a short durable handoff; silence is an explicit successful warning; normalization, chunk retry/resume, rate limiting, and every export format have automated coverage. Ruff, mypy, 70 tests with 82% coverage, wheel packaging, JavaScript syntax, a fresh image build, and four-service readiness on port 8002 pass.</div>
             </div>
           </article>
         </section>
@@ -633,11 +634,13 @@
               <h3>Fast suite — always run</h3>
               <ul>
                 <li>Configuration parsing and invalid combinations.</li>
-                <li>Health before/after model readiness.</li>
+                <li>Health before/after job infrastructure and worker readiness.</li>
                 <li>API contract using a deterministic fake transcriber.</li>
                 <li>Upload size, MIME/container mismatch, corrupt media, and missing audio.</li>
                 <li>Language validation, Hebrew Unicode serialization, and segment mapping.</li>
                 <li>Model errors, overload behavior, request IDs, and resource cleanup.</li>
+                <li>16 kHz mono normalization, silence warnings, chunk retry/resume, and ordered assembly.</li>
+                <li>Local rate windows plus JSON, TXT, SRT, and VTT rendering.</li>
               </ul>
             </div>
             <div class="note">
@@ -683,13 +686,13 @@ cp .env.example .env
 make run          # local API with reload
 make check        # Ruff + mypy + fast pytest suite
 make smoke SAMPLES="en=/absolute/path/to/sample.mp3"
-                  # health + real-model request through the in-process API</code></pre>
-          <div class="callout warning"><strong>Do not hide setup costs:</strong> The README must call out the first model download, expected CPU behavior, supported formats, synchronous limits, and the fact that one worker is deliberate.</div>
+                  # health + real-model request through the Compose API</code></pre>
+          <div class="callout warning"><strong>Do not hide setup costs:</strong> The README must call out the first model download, expected CPU behavior, supported formats, worker limits, and the fact that one worker is deliberate.</div>
         </section>
 
         <section id="done">
           <h2>Definition of done</h2>
-          <p class="section-intro">The four groups below now cover the synchronous release and durable Phases 6–7 stack. Phase 8 adds media/product behavior; planned behavior must not be presented as current behavior.</p>
+          <p class="section-intro">The four groups below cover the completed durable asynchronous-only Phases 6–8 stack.</p>
           <div class="grid">
             <div class="note">
               <h3>Functional</h3>
@@ -703,10 +706,10 @@ make smoke SAMPLES="en=/absolute/path/to/sample.mp3"
             <div class="note">
               <h3>Operational</h3>
               <ul>
-                <li>Model loads once; readiness accurately reflects it.</li>
+                <li>The API stays model-free; readiness reflects PostgreSQL, Redis, and a live worker heartbeat.</li>
                 <li>Uploads are bounded and closed on every path.</li>
                 <li>Inference cannot block the event loop or run without a concurrency limit.</li>
-                <li>No uploaded media or transcript persists after the response.</li>
+                <li>Successful source media is deleted immediately; failed media and results follow configured retention.</li>
               </ul>
             </div>
             <div class="note">
@@ -728,12 +731,12 @@ make smoke SAMPLES="en=/absolute/path/to/sample.mp3"
               </ul>
             </div>
           </div>
-          <div class="callout warning"><strong>Phase 8 is done only when:</strong> 16 kHz mono normalization and silent-input behavior are explicit; JSON, TXT, SRT, and VTT exports pass automated tests; rate limiting and long-file chunking are implemented; and the full local Compose stack passes a clean-clone smoke test. Phases 6–7 already prove durability, UI polling, retries, hard deadlines, deduplication, crash recovery, retention, and readiness.</div>
+          <div class="callout success"><strong>Phases 6–8 complete:</strong> The stack proves durable asynchronous handoff, retries and hard deadlines, deduplication, crash recovery, retention, readiness, 16 kHz mono normalization, explicit silence, resumable chunking, rate limiting, exports, and UI reload recovery. Real-model quality remains an explicit opt-in smoke test.</div>
         </section>
 
         <section id="future">
           <h2>Approved local evolution and later scaling</h2>
-          <p class="section-intro">Phases 6–7 implement and harden this flow locally; Phase 8 expands its media behavior. Managed object storage, cloud databases, Kubernetes, and GPU fleets remain later deployment choices rather than prerequisites.</p>
+          <p class="section-intro">Phases 6–8 implement and harden this flow locally. Managed object storage, cloud databases, Kubernetes, and GPU fleets remain later deployment choices rather than prerequisites.</p>
           <div class="architecture" role="img" aria-label="Client uploads media through an API to a local volume, a local Redis queue sends a job to an inference worker, and status and results are stored in local PostgreSQL.">
             <div class="node"><strong>API</strong><span>202 + job ID</span></div>
             <div class="arrow" aria-hidden="true">→</div>
@@ -745,7 +748,7 @@ make smoke SAMPLES="en=/absolute/path/to/sample.mp3"
           </div>
           <div class="branch">
             <div class="node"><strong>Local PostgreSQL</strong><span>job state + results</span></div>
-            <div class="node future"><strong>Rate limits</strong><span>local abuse control</span></div>
+            <div class="node"><strong>Rate limits</strong><span>local abuse control</span></div>
             <div class="node"><strong>Cleanup worker</strong><span>expire media/results</span></div>
           </div>
           <p style="margin-top:1rem">The public asynchronous flow is <code>POST → 202</code>, <code>GET /v1/transcriptions/{id}</code>, and <code>GET /v1/transcriptions/{id}/result</code>. The <code>Transcriber</code> boundary is reused inside the worker. Later, the <code>MediaStore</code> can target S3-compatible storage and workers can scale per GPU without changing the HTTP contract.</p>

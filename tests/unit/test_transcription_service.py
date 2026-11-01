@@ -1,42 +1,49 @@
-"""Transcription use-case tests."""
+"""Chunk retry, ordering, and checkpoint-resume tests."""
 
-import asyncio
 import io
-from threading import Event
+from pathlib import Path
 from typing import BinaryIO, ClassVar
 
 import pytest
 
 from transcription_service.core.config import Settings
-from transcription_service.core.errors import ModelBusyError
+from transcription_service.core.errors import ModelInferenceError
 from transcription_service.domain import (
     AudioMode,
-    MediaMetadata,
-    ModelProfile,
+    NormalizedChunk,
+    NormalizedMedia,
     SegmentResult,
     TranscriptionResult,
 )
 from transcription_service.services.transcription import TranscriptionService
 
 
-class StaticMediaInspector:
-    def inspect(
+class ChunkedMediaNormalizer:
+    def normalize(
         self,
         media: BinaryIO,
         *,
         filename: str | None,
         content_type: str | None,
-    ) -> MediaMetadata:
-        return MediaMetadata(duration_seconds=0.25, format_name="wav")
+    ) -> NormalizedMedia:
+        del media, filename, content_type
+        return NormalizedMedia(
+            chunks=tuple(
+                NormalizedChunk(index, index * 0.25, io.BytesIO(str(index).encode()))
+                for index in range(3)
+            ),
+            duration_seconds=0.75,
+            is_silent=False,
+        )
 
 
-class BlockingTranscriber:
-    model_id = "test/blocking-model"
+class ChunkTranscriber:
+    model_id = "test/chunk-model"
     supported_languages: ClassVar[frozenset[str]] = frozenset({"en", "he"})
 
-    def __init__(self) -> None:
-        self.started = Event()
-        self.release = Event()
+    def __init__(self, failures: dict[int, int] | None = None) -> None:
+        self.failures = failures or {}
+        self.calls: list[int] = []
 
     def transcribe(
         self,
@@ -45,151 +52,68 @@ class BlockingTranscriber:
         language: str | None,
         audio_mode: AudioMode,
     ) -> TranscriptionResult:
-        self.started.set()
-        if not self.release.wait(timeout=2):
-            raise TimeoutError("test did not release blocking transcriber")
+        del audio_mode
+        index = int(media.read().decode())
+        self.calls.append(index)
+        if self.failures.get(index, 0) > 0:
+            self.failures[index] -= 1
+            raise RuntimeError("planned chunk failure")
+        text = f"chunk-{index}"
         return TranscriptionResult(
-            text="done",
+            text=text,
             language=language or "en",
-            language_probability=1,
+            language_probability=0.9,
             duration_seconds=0.25,
-            segments=(SegmentResult(start=0, end=0.25, text="done"),),
+            segments=(SegmentResult(0, 0.25, text),),
         )
 
 
-@pytest.mark.parametrize("model_profile", list(ModelProfile))
-def test_rejects_second_request_when_inference_queue_times_out(model_profile: ModelProfile) -> None:
-    async def scenario() -> None:
-        settings = Settings(
-            _env_file=None,
-            environment="test",
-            max_concurrent_transcriptions=1,
-            inference_queue_timeout_seconds=0.01,
+def _transcribe(service: TranscriptionService, checkpoint: Path) -> TranscriptionResult:
+    return service.transcribe(
+        io.BytesIO(b"source"),
+        size_bytes=6,
+        filename="sample.wav",
+        content_type="audio/wav",
+        language="en",
+        audio_mode=AudioMode.SPEECH,
+        checkpoint_path=checkpoint,
+    ).result
+
+
+def test_chunk_retry_preserves_order_and_offsets_timestamps(tmp_path: Path) -> None:
+    transcriber = ChunkTranscriber({1: 1})
+    result = _transcribe(
+        TranscriptionService(
+            transcriber,
+            ChunkedMediaNormalizer(),
+            Settings(_env_file=None, chunk_max_attempts=2),
+        ),
+        tmp_path / "chunks.json",
+    )
+
+    assert transcriber.calls == [0, 1, 1, 2]
+    assert result.text == "chunk-0 chunk-1 chunk-2"
+    assert [segment.start for segment in result.segments] == [0, 0.25, 0.5]
+    assert [segment.end for segment in result.segments] == [0.25, 0.5, 0.75]
+
+
+def test_chunk_checkpoint_resumes_after_failed_attempt(tmp_path: Path) -> None:
+    checkpoint = tmp_path / "chunks.json"
+    settings = Settings(_env_file=None, chunk_max_attempts=2)
+    failing = ChunkTranscriber({2: 2})
+
+    with pytest.raises(ModelInferenceError):
+        _transcribe(
+            TranscriptionService(failing, ChunkedMediaNormalizer(), settings),
+            checkpoint,
         )
-        transcriber = BlockingTranscriber()
-        service = TranscriptionService(
-            transcriber, StaticMediaInspector(), settings, transcriber_factory=lambda _: transcriber
-        )
-        first_request = asyncio.create_task(
-            service.transcribe(
-                io.BytesIO(b"first"),
-                size_bytes=5,
-                filename="first.wav",
-                content_type="audio/wav",
-                language="en",
-                audio_mode=AudioMode.SPEECH,
-                model_profile=model_profile,
-            )
-        )
+    assert failing.calls == [0, 1, 2, 2]
 
-        started = await asyncio.to_thread(transcriber.started.wait, 1)
-        assert started
-        try:
-            with pytest.raises(ModelBusyError) as raised:
-                await service.transcribe(
-                    io.BytesIO(b"second"),
-                    size_bytes=6,
-                    filename="second.wav",
-                    content_type="audio/wav",
-                    language="en",
-                    audio_mode=AudioMode.SPEECH,
-                )
-            assert raised.value.headers == {"Retry-After": "1"}
-        finally:
-            transcriber.release.set()
+    resumed = ChunkTranscriber()
+    result = _transcribe(
+        TranscriptionService(resumed, ChunkedMediaNormalizer(), settings),
+        checkpoint,
+    )
 
-        completed = await first_request
-        assert completed.result.text == "done"
-
-    asyncio.run(scenario())
-
-
-def test_concurrent_large_requests_initialize_model_once() -> None:
-    async def scenario() -> None:
-        settings = Settings(_env_file=None, max_concurrent_transcriptions=2)
-        transcriber = BlockingTranscriber()
-        transcriber.release.set()
-        loading_started = Event()
-        finish_loading = Event()
-        load_count = 0
-
-        def factory(model_settings: Settings) -> BlockingTranscriber:
-            nonlocal load_count
-            load_count += 1
-            assert model_settings.model_id == settings.larger_model_id
-            loading_started.set()
-            if not finish_loading.wait(timeout=2):
-                raise TimeoutError("test did not release model loading")
-            return transcriber
-
-        service = TranscriptionService(
-            transcriber, StaticMediaInspector(), settings, transcriber_factory=factory
-        )
-
-        async def request() -> str:
-            completed = await service.transcribe(
-                io.BytesIO(b"audio"),
-                size_bytes=5,
-                filename="sample.wav",
-                content_type="audio/wav",
-                language="he",
-                audio_mode=AudioMode.MUSIC,
-                model_profile=ModelProfile.LARGER,
-            )
-            return completed.result.text
-
-        tasks = [asyncio.create_task(request()) for _ in range(2)]
-        try:
-            assert await asyncio.to_thread(loading_started.wait, 1)
-        finally:
-            finish_loading.set()
-        assert await asyncio.gather(*tasks) == ["done", "done"]
-        assert load_count == 1
-
-    asyncio.run(scenario())
-
-
-def test_cancellation_keeps_upload_and_capacity_until_worker_finishes() -> None:
-    async def scenario() -> None:
-        settings = Settings(_env_file=None, inference_queue_timeout_seconds=0.01)
-        transcriber = BlockingTranscriber()
-        media = io.BytesIO(b"audio")
-        service = TranscriptionService(transcriber, StaticMediaInspector(), settings)
-
-        async def request() -> None:
-            try:
-                await service.transcribe(
-                    media,
-                    size_bytes=5,
-                    filename="sample.wav",
-                    content_type="audio/wav",
-                    language="en",
-                    audio_mode=AudioMode.SPEECH,
-                )
-            finally:
-                media.close()
-
-        task = asyncio.create_task(request())
-        assert await asyncio.to_thread(transcriber.started.wait, 1)
-        task.cancel()
-        try:
-            with pytest.raises(ModelBusyError):
-                await service.transcribe(
-                    io.BytesIO(b"other"),
-                    size_bytes=5,
-                    filename="other.wav",
-                    content_type="audio/wav",
-                    language="en",
-                    audio_mode=AudioMode.SPEECH,
-                )
-            task.cancel()  # Repeated cancellation must not cancel the shielded worker either.
-            await asyncio.sleep(0)
-            assert not task.done()
-            assert not media.closed
-        finally:
-            transcriber.release.set()
-            with pytest.raises(asyncio.CancelledError):
-                await task
-        assert media.closed
-
-    asyncio.run(scenario())
+    assert resumed.calls == [2]
+    assert result.text == "chunk-0 chunk-1 chunk-2"

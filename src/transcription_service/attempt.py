@@ -7,9 +7,10 @@ from pathlib import Path
 
 from transcription_service.adapters.faster_whisper import FasterWhisperTranscriber
 from transcription_service.adapters.jobs import LocalMediaStore, PostgresJobRepository
-from transcription_service.adapters.media import PyAvMediaInspector
+from transcription_service.adapters.media import PyAvMediaNormalizer
 from transcription_service.core.config import get_settings
 from transcription_service.core.logging import configure_logging
+from transcription_service.domain import ModelProfile
 from transcription_service.jobs.domain import JobExecutionResult
 from transcription_service.services.execution import InlineJobRunner
 from transcription_service.services.transcription import TranscriptionService
@@ -47,12 +48,22 @@ def main() -> int:
         )
         return 0
 
-    transcriber = FasterWhisperTranscriber.from_settings(settings)
+    model_settings = settings
+    if job.model_profile is ModelProfile.LARGER:
+        model_settings = settings.model_copy(
+            update={
+                "model_id": settings.larger_model_id,
+                "model_revision": settings.larger_model_revision,
+            }
+        )
+    transcriber = FasterWhisperTranscriber.from_settings(model_settings)
     service = TranscriptionService(
         transcriber,
-        PyAvMediaInspector(max_duration_seconds=settings.max_media_duration_seconds),
+        PyAvMediaNormalizer(
+            max_duration_seconds=settings.max_media_duration_seconds,
+            chunk_duration_seconds=settings.chunk_duration_seconds,
+        ),
         settings,
-        transcriber_factory=FasterWhisperTranscriber.from_settings,
     )
     media_store = LocalMediaStore(settings.media_storage_path)
     outcome = InlineJobRunner(service).run(job, media_store.path_for(job.media_key), lambda: None)

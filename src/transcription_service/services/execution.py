@@ -1,6 +1,5 @@
 """Inline and hard-deadline execution strategies for one job attempt."""
 
-import asyncio
 import json
 import os
 import subprocess
@@ -41,7 +40,7 @@ class InlineJobRunner:
     ) -> JobExecutionResult:
         del heartbeat
         try:
-            response = asyncio.run(self._transcribe(job, media_path))
+            response = self._transcribe(job, media_path)
             return JobExecutionResult.succeeded(response.model_dump(mode="json"))
         except ApplicationError as exc:
             return JobExecutionResult.failed(
@@ -61,16 +60,16 @@ class InlineJobRunner:
                 retryable=True,
             )
 
-    async def _transcribe(self, job: TranscriptionJob, path: Path) -> TranscriptionResponse:
+    def _transcribe(self, job: TranscriptionJob, path: Path) -> TranscriptionResponse:
         with path.open("rb") as media:
-            completed = await self._transcription_service.transcribe(
+            completed = self._transcription_service.transcribe(
                 media,
                 size_bytes=path.stat().st_size,
                 filename=job.filename,
                 content_type=job.content_type,
                 language=job.language,
                 audio_mode=job.audio_mode,
-                model_profile=job.model_profile,
+                checkpoint_path=path.with_suffix(".chunks.json"),
             )
         return TranscriptionResponse(
             text=completed.result.text,
@@ -83,6 +82,7 @@ class InlineJobRunner:
                 TranscriptionSegment(start=item.start, end=item.end, text=item.text)
                 for item in completed.result.segments
             ],
+            warnings=list(completed.warnings),
         )
 
 

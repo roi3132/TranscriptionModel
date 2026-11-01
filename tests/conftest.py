@@ -4,6 +4,7 @@ import io
 import wave
 from collections.abc import Callable, Iterator
 from fractions import Fraction
+from pathlib import Path
 from typing import BinaryIO
 
 import av
@@ -11,6 +12,8 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from tests.job_fakes import MemoryJobBroker, MemoryJobRepository
+from transcription_service.adapters.jobs import LocalMediaStore
 from transcription_service.core.config import Settings
 from transcription_service.domain import (
     AudioMode,
@@ -50,7 +53,7 @@ class FakeTranscriber:
         )
 
 
-def make_wav_bytes(duration_seconds: float = 0.25) -> bytes:
+def make_wav_bytes(duration_seconds: float = 0.25, *, sample: int = 1000) -> bytes:
     """Create a small, deterministic mono PCM WAV without external tools."""
 
     sample_rate = 16_000
@@ -60,7 +63,7 @@ def make_wav_bytes(duration_seconds: float = 0.25) -> bytes:
         wav_file.setnchannels(1)
         wav_file.setsampwidth(2)
         wav_file.setframerate(sample_rate)
-        wav_file.writeframes(bytes(frame_count * 2))
+        wav_file.writeframes(sample.to_bytes(2, "little", signed=True) * frame_count)
     return output.getvalue()
 
 
@@ -161,8 +164,35 @@ def video_without_audio_factory() -> Callable[[str, float], bytes]:
 
 
 @pytest.fixture
-def app(settings: Settings, fake_transcriber: FakeTranscriber) -> FastAPI:
-    return create_app(settings, transcriber_factory=lambda _: fake_transcriber)
+def job_repository() -> MemoryJobRepository:
+    return MemoryJobRepository()
+
+
+@pytest.fixture
+def job_broker() -> MemoryJobBroker:
+    broker = MemoryJobBroker()
+    broker.heartbeat(15)
+    return broker
+
+
+@pytest.fixture
+def media_store(tmp_path: Path) -> LocalMediaStore:
+    return LocalMediaStore(tmp_path / "media")
+
+
+@pytest.fixture
+def app(
+    settings: Settings,
+    job_repository: MemoryJobRepository,
+    job_broker: MemoryJobBroker,
+    media_store: LocalMediaStore,
+) -> FastAPI:
+    return create_app(
+        settings,
+        job_repository=job_repository,
+        job_broker=job_broker,
+        media_store=media_store,
+    )
 
 
 @pytest.fixture

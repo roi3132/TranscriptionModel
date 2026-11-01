@@ -9,7 +9,7 @@ setup:
 	$(UV) sync --frozen --all-groups
 
 run:
-	$(UV) run --frozen uvicorn transcription_service.main:app --reload
+	docker compose up --build
 
 check:
 	$(UV) lock --check

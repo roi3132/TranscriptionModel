@@ -1,4 +1,4 @@
-"""Synchronous media transcription endpoint."""
+"""Durable asynchronous transcription endpoints."""
 
 import re
 from functools import partial
@@ -7,8 +7,7 @@ from typing import Annotated, BinaryIO
 from uuid import UUID
 
 import anyio
-from fastapi import APIRouter, Depends, File, Form, Header, Request, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Depends, File, Form, Header, Query, Request, Response, UploadFile
 
 from transcription_service.api.uploads import BoundedUploadRoute
 from transcription_service.core.errors import (
@@ -17,7 +16,7 @@ from transcription_service.core.errors import (
     InvalidLanguageError,
     JobNotFoundError,
     JobResultNotReadyError,
-    ModelNotReadyError,
+    JobServiceNotReadyError,
     UploadTooLargeError,
 )
 from transcription_service.domain import AudioMode, ModelProfile
@@ -28,12 +27,8 @@ from transcription_service.schemas.jobs import (
     JobResultResponse,
     JobStatusResponse,
 )
-from transcription_service.schemas.transcription import (
-    TranscriptionResponse,
-    TranscriptionSegment,
-)
+from transcription_service.services.exports import ResultFormat, render_result
 from transcription_service.services.jobs import JobSubmissionService
-from transcription_service.services.transcription import TranscriptionService
 
 router = APIRouter(
     prefix="/transcriptions", tags=["transcriptions"], route_class=BoundedUploadRoute
@@ -42,24 +37,16 @@ LANGUAGE_CODE_PATTERN = re.compile(r"^[a-z]{2,3}$")
 IDEMPOTENCY_KEY_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 
 
-def transcription_service(request: Request) -> TranscriptionService | None:
-    """Resolve the process-wide service created by the application lifespan."""
+def job_service(request: Request) -> JobSubmissionService:
+    """Resolve the durable job service created by the application lifespan."""
 
-    service: TranscriptionService | None = request.app.state.transcription_service
-    if service is None and request.app.state.job_service is None:
-        raise ModelNotReadyError
-    return service
-
-
-TranscriptionServiceDependency = Annotated[
-    TranscriptionService | None,
-    Depends(transcription_service),
-]
-
-
-def _job_service(request: Request) -> JobSubmissionService | None:
     service: JobSubmissionService | None = request.app.state.job_service
+    if service is None:
+        raise JobServiceNotReadyError
     return service
+
+
+JobServiceDependency = Annotated[JobSubmissionService, Depends(job_service)]
 
 
 def _canonical_job_id(value: str) -> str:
@@ -96,24 +83,24 @@ def _stream_size(media: BinaryIO) -> int:
 
 @router.post(
     "",
-    response_model=TranscriptionResponse | JobAcceptedResponse,
+    status_code=HTTPStatus.ACCEPTED,
+    response_model=JobAcceptedResponse,
     responses={
         HTTPStatus.BAD_REQUEST: {"model": ErrorResponse},
         HTTPStatus.REQUEST_ENTITY_TOO_LARGE: {"model": ErrorResponse},
-        HTTPStatus.UNSUPPORTED_MEDIA_TYPE: {"model": ErrorResponse},
         HTTPStatus.UNPROCESSABLE_ENTITY: {"model": ErrorResponse},
-        HTTPStatus.INTERNAL_SERVER_ERROR: {"model": ErrorResponse},
+        HTTPStatus.TOO_MANY_REQUESTS: {"model": ErrorResponse},
         HTTPStatus.SERVICE_UNAVAILABLE: {"model": ErrorResponse},
         HTTPStatus.CONFLICT: {"model": ErrorResponse},
         HTTPStatus.INSUFFICIENT_STORAGE: {"model": ErrorResponse},
-        HTTPStatus.ACCEPTED: {"model": JobAcceptedResponse},
     },
-    summary="Transcribe an audio or video file",
+    summary="Queue an audio or video transcription",
 )
 async def create_transcription(
     request: Request,
+    response: Response,
     file: Annotated[UploadFile, File(description="Audio or video file to transcribe")],
-    service: TranscriptionServiceDependency,
+    service: JobServiceDependency,
     language: Annotated[
         str,
         Form(description="Whisper language code or 'auto' for detection"),
@@ -127,8 +114,8 @@ async def create_transcription(
         Form(description="'faster' uses the small model; 'larger' lazily loads large-v3"),
     ] = ModelProfile.FASTER,
     idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
-) -> TranscriptionResponse | JSONResponse:
-    """Complete synchronously or accept a durable job, according to deployment mode."""
+) -> JobAcceptedResponse:
+    """Persist an upload and return the durable job used to process it."""
 
     # BoundedUploadRoute and FastAPI own the multipart form's complete lifetime.
     size_bytes = file.size
@@ -139,54 +126,22 @@ async def create_transcription(
     if size_bytes > request.app.state.settings.max_upload_bytes:
         raise UploadTooLargeError(request.app.state.settings.max_upload_bytes)
 
-    normalized_language = _normalized_language(language)
-    job_service = _job_service(request)
-    if job_service is not None:
-        job = await job_service.submit(
-            file.file,
-            filename=file.filename,
-            content_type=file.content_type,
-            language=normalized_language,
-            audio_mode=audio_mode,
-            model_profile=model_profile,
-            idempotency_key=_normalized_idempotency_key(idempotency_key),
-        )
-        status_url = str(request.url_for("get_transcription_job", job_id=job.id))
-        result_url = str(request.url_for("get_transcription_result", job_id=job.id))
-        payload = JobAcceptedResponse(
-            id=job.id,
-            status=job.status,
-            status_url=status_url,
-            result_url=result_url,
-        )
-        return JSONResponse(
-            status_code=HTTPStatus.ACCEPTED,
-            content=payload.model_dump(mode="json"),
-            headers={"Location": status_url},
-        )
-
-    if service is None:
-        raise ModelNotReadyError
-    completed = await service.transcribe(
+    job = await service.submit(
         file.file,
-        size_bytes=size_bytes,
         filename=file.filename,
         content_type=file.content_type,
-        language=normalized_language,
+        language=_normalized_language(language),
         audio_mode=audio_mode,
         model_profile=model_profile,
+        idempotency_key=_normalized_idempotency_key(idempotency_key),
     )
-    return TranscriptionResponse(
-        text=completed.result.text,
-        language=completed.result.language,
-        language_probability=completed.result.language_probability,
-        duration_seconds=completed.result.duration_seconds,
-        processing_time_seconds=completed.processing_time_seconds,
-        model=completed.model_id,
-        segments=[
-            TranscriptionSegment(start=item.start, end=item.end, text=item.text)
-            for item in completed.result.segments
-        ],
+    status_url = str(request.url_for("get_transcription_job", job_id=job.id))
+    response.headers["Location"] = status_url
+    return JobAcceptedResponse(
+        id=job.id,
+        status=job.status,
+        status_url=status_url,
+        result_url=str(request.url_for("get_transcription_result", job_id=job.id)),
     )
 
 
@@ -196,10 +151,11 @@ async def create_transcription(
     responses={HTTPStatus.NOT_FOUND: {"model": ErrorResponse}},
     name="get_transcription_job",
 )
-async def get_transcription_job(job_id: str, request: Request) -> JobStatusResponse:
-    service = _job_service(request)
-    if service is None:
-        raise JobNotFoundError
+async def get_transcription_job(
+    job_id: str,
+    request: Request,
+    service: JobServiceDependency,
+) -> JobStatusResponse:
     job = await service.get(_canonical_job_id(job_id))
     if job is None:
         raise JobNotFoundError
@@ -227,18 +183,39 @@ async def get_transcription_job(job_id: str, request: Request) -> JobStatusRespo
     "/{job_id}/result",
     response_model=JobResultResponse,
     responses={
+        HTTPStatus.OK: {
+            "content": {
+                "application/json": {},
+                "text/plain": {},
+                "application/x-subrip": {},
+                "text/vtt": {},
+            }
+        },
         HTTPStatus.NOT_FOUND: {"model": ErrorResponse},
         HTTPStatus.CONFLICT: {"model": ErrorResponse},
     },
     name="get_transcription_result",
 )
-async def get_transcription_result(job_id: str, request: Request) -> JobResultResponse:
-    service = _job_service(request)
-    if service is None:
-        raise JobNotFoundError
+async def get_transcription_result(
+    job_id: str,
+    service: JobServiceDependency,
+    result_format: Annotated[ResultFormat, Query(alias="format")] = ResultFormat.JSON,
+) -> JobResultResponse | Response:
     job = await service.get(_canonical_job_id(job_id))
     if job is None:
         raise JobNotFoundError
     if job.status is not JobStatus.SUCCEEDED or job.result is None:
         raise JobResultNotReadyError
-    return JobResultResponse.model_validate({**job.result, "job_id": job.id})
+    result = JobResultResponse.model_validate({**job.result, "job_id": job.id})
+    if result_format is ResultFormat.JSON:
+        return result
+    media_types = {
+        ResultFormat.TXT: "text/plain",
+        ResultFormat.SRT: "application/x-subrip",
+        ResultFormat.VTT: "text/vtt",
+    }
+    return Response(
+        render_result(result, result_format),
+        media_type=media_types[result_format],
+        headers={"Content-Disposition": f'attachment; filename="{job.id}.{result_format.value}"'},
+    )

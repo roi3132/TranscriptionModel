@@ -19,12 +19,11 @@ async def transcription_page() -> FileResponse:
 
 
 @router.get("/client-config", include_in_schema=False)
-async def client_configuration(request: Request) -> dict[str, str | int | bool]:
+async def client_configuration(request: Request) -> dict[str, str | int]:
     """Expose only the public settings needed by the browser."""
 
     settings: Settings = request.app.state.settings
     return {
         "transcription_url": f"{settings.api_prefix}/transcriptions",
         "max_upload_bytes": settings.max_upload_bytes,
-        "async_jobs_enabled": settings.async_jobs_enabled,
     }

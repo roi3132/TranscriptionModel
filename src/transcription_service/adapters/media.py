@@ -1,6 +1,8 @@
-"""Audio and video container inspection implemented with PyAV."""
+"""Explicit 16 kHz mono PCM normalization implemented with PyAV."""
 
-from fractions import Fraction
+import io
+import wave
+from itertools import chain
 from pathlib import Path
 from typing import BinaryIO
 
@@ -11,7 +13,7 @@ from transcription_service.core.errors import (
     NoAudioStreamError,
     UnsupportedMediaError,
 )
-from transcription_service.domain import MediaMetadata
+from transcription_service.domain import NormalizedChunk, NormalizedMedia
 
 AUDIO_EXTENSIONS = frozenset({".aac", ".flac", ".m4a", ".mp3", ".ogg", ".opus", ".wav"})
 VIDEO_EXTENSIONS = frozenset({".mkv", ".mov", ".mp4", ".webm"})
@@ -44,19 +46,28 @@ MEDIA_EXTENSIONS = AUDIO_EXTENSIONS | VIDEO_EXTENSIONS
 MEDIA_CONTENT_TYPES = AUDIO_CONTENT_TYPES | VIDEO_CONTENT_TYPES
 
 
-class PyAvMediaInspector:
-    """Validate and bound decoded audio from the container's first audio stream."""
+class PyAvMediaNormalizer:
+    """Decode the first audio stream into bounded 16 kHz mono WAV chunks."""
 
-    def __init__(self, *, max_duration_seconds: float = 900) -> None:
+    sample_rate = 16_000
+    sample_width = 2
+
+    def __init__(
+        self,
+        *,
+        max_duration_seconds: float = 900,
+        chunk_duration_seconds: float = 300,
+    ) -> None:
         self._max_duration_seconds = max_duration_seconds
+        self._chunk_duration_seconds = chunk_duration_seconds
 
-    def inspect(
+    def normalize(
         self,
         media: BinaryIO,
         *,
         filename: str | None,
         content_type: str | None,
-    ) -> MediaMetadata:
+    ) -> NormalizedMedia:
         suffix = Path(filename or "").suffix.lower()
         normalized_content_type = (content_type or "").partition(";")[0].strip().lower()
 
@@ -70,29 +81,34 @@ class PyAvMediaInspector:
                     raise NoAudioStreamError
 
                 audio_stream = container.streams.audio[0]
-                duration_seconds: float | None = None
-                if audio_stream.duration is not None and audio_stream.time_base is not None:
-                    duration_seconds = float(audio_stream.duration * audio_stream.time_base)
-
-                if duration_seconds is not None and duration_seconds > self._max_duration_seconds:
-                    raise MediaTooLongError(self._max_duration_seconds)
-
-                # Container metadata may be missing or inaccurate. Count decoded samples as well,
-                # stopping before faster-whisper can allocate an oversized audio array.
-                decoded_duration = Fraction(0)
-                for frame in container.decode(audio_stream):
-                    if frame.sample_rate <= 0:
-                        raise UnsupportedMediaError
-                    decoded_duration += Fraction(frame.samples, frame.sample_rate)
-                    if decoded_duration > self._max_duration_seconds:
+                resampler = av.AudioResampler(
+                    format="s16",
+                    layout="mono",
+                    rate=self.sample_rate,
+                )
+                pcm = bytearray()
+                maximum_bytes = int(
+                    self._max_duration_seconds * self.sample_rate * self.sample_width
+                )
+                decoded = (
+                    normalized
+                    for frame in container.decode(audio_stream)
+                    for normalized in resampler.resample(frame)
+                )
+                for normalized in chain(decoded, resampler.resample(None)):
+                    pcm.extend(
+                        bytes(normalized.planes[0])[: normalized.samples * self.sample_width]
+                    )
+                    if len(pcm) > maximum_bytes:
                         raise MediaTooLongError(self._max_duration_seconds)
 
-                if not decoded_duration:
+                sample_count = len(pcm) // self.sample_width
+                if not sample_count:
                     raise UnsupportedMediaError
-
-                return MediaMetadata(
-                    duration_seconds=float(decoded_duration),
-                    format_name=container.format.name or "unknown",
+                return NormalizedMedia(
+                    chunks=self._chunks(bytes(pcm)),
+                    duration_seconds=sample_count / self.sample_rate,
+                    is_silent=not any(pcm),
                 )
         except NoAudioStreamError:
             raise
@@ -101,3 +117,28 @@ class PyAvMediaInspector:
         finally:
             if not media.closed:
                 media.seek(0)
+
+    def _chunks(self, pcm: bytes) -> tuple[NormalizedChunk, ...]:
+        chunk_bytes = max(
+            self.sample_width,
+            int(self._chunk_duration_seconds * self.sample_rate) * self.sample_width,
+        )
+        chunks: list[NormalizedChunk] = []
+        for index, offset in enumerate(range(0, len(pcm), chunk_bytes)):
+            chunk_pcm = pcm[offset : offset + chunk_bytes]
+            output = io.BytesIO()
+            with wave.open(output, "wb") as wav_file:
+                wav_file.setnchannels(1)
+                wav_file.setsampwidth(self.sample_width)
+                wav_file.setframerate(self.sample_rate)
+                wav_file.writeframes(chunk_pcm)
+            output.seek(0)
+            start_samples = offset // self.sample_width
+            chunks.append(
+                NormalizedChunk(
+                    index=index,
+                    start_seconds=start_samples / self.sample_rate,
+                    media=output,
+                )
+            )
+        return tuple(chunks)

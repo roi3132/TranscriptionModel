@@ -1,14 +1,13 @@
-"""PyAV media inspection tests."""
+"""PyAV media normalization tests."""
 
 import io
-from collections.abc import Callable, Iterator
-from fractions import Fraction
-from types import SimpleNamespace
-from unittest.mock import MagicMock
+import wave
+from collections.abc import Callable
 
 import pytest
 
-from transcription_service.adapters.media import PyAvMediaInspector
+from tests.conftest import make_wav_bytes
+from transcription_service.adapters.media import PyAvMediaNormalizer
 from transcription_service.core.errors import (
     MediaTooLongError,
     NoAudioStreamError,
@@ -16,46 +15,81 @@ from transcription_service.core.errors import (
 )
 
 
-def test_inspects_wav_and_leaves_stream_open(
+def test_normalizes_to_16khz_mono_wav_and_leaves_source_open(
     wav_factory: Callable[[float], bytes],
 ) -> None:
-    media = io.BytesIO(wav_factory(0.25))
-    media.seek(7)
+    source = io.BytesIO(wav_factory(0.25))
+    source.seek(7)
 
-    metadata = PyAvMediaInspector().inspect(
-        media,
+    normalized = PyAvMediaNormalizer().normalize(
+        source,
         filename="sample.wav",
         content_type="audio/wav",
     )
 
-    assert metadata.format_name == "wav"
-    assert metadata.duration_seconds == pytest.approx(0.25)
-    assert media.tell() == 0
-    assert not media.closed
+    assert normalized.duration_seconds == pytest.approx(0.25)
+    assert normalized.is_silent is False
+    assert len(normalized.chunks) == 1
+    with wave.open(normalized.chunks[0].media, "rb") as wav_file:
+        assert wav_file.getframerate() == 16_000
+        assert wav_file.getnchannels() == 1
+        assert wav_file.getsampwidth() == 2
+        assert wav_file.getnframes() == 4_000
+    assert source.tell() == 0
+    assert not source.closed
 
 
-def test_rejects_unknown_file_type() -> None:
+def test_splits_normalized_audio_into_ordered_chunks(
+    wav_factory: Callable[[float], bytes],
+) -> None:
+    normalized = PyAvMediaNormalizer(chunk_duration_seconds=0.1).normalize(
+        io.BytesIO(wav_factory(0.25)),
+        filename="sample.wav",
+        content_type="audio/wav",
+    )
+
+    assert [chunk.index for chunk in normalized.chunks] == [0, 1, 2]
+    assert [chunk.start_seconds for chunk in normalized.chunks] == pytest.approx([0, 0.1, 0.2])
+
+
+def test_marks_zero_pcm_as_silent() -> None:
+    normalized = PyAvMediaNormalizer().normalize(
+        io.BytesIO(make_wav_bytes(0.1, sample=0)),
+        filename="silence.wav",
+        content_type="audio/wav",
+    )
+
+    assert normalized.is_silent is True
+
+
+@pytest.mark.parametrize(
+    ("payload", "filename", "content_type"),
+    [
+        (b"plain text", "notes.txt", "text/plain"),
+        (b"not wave data", "broken.wav", "audio/wav"),
+    ],
+)
+def test_rejects_unsupported_or_corrupt_media(
+    payload: bytes,
+    filename: str,
+    content_type: str,
+) -> None:
     with pytest.raises(UnsupportedMediaError):
-        PyAvMediaInspector().inspect(
-            io.BytesIO(b"plain text"),
-            filename="notes.txt",
-            content_type="text/plain",
+        PyAvMediaNormalizer().normalize(
+            io.BytesIO(payload),
+            filename=filename,
+            content_type=content_type,
         )
 
 
-def test_rejects_corrupt_allowed_container() -> None:
+def test_rejects_audio_container_without_samples(
+    wav_factory: Callable[[float], bytes],
+) -> None:
     with pytest.raises(UnsupportedMediaError):
-        PyAvMediaInspector().inspect(
-            io.BytesIO(b"not wave data"),
-            filename="broken.wav",
+        PyAvMediaNormalizer().normalize(
+            io.BytesIO(wav_factory(0)),
+            filename="empty.wav",
             content_type="audio/wav",
-        )
-
-
-def test_rejects_audio_container_without_samples(wav_factory: Callable[[float], bytes]) -> None:
-    with pytest.raises(UnsupportedMediaError):
-        PyAvMediaInspector().inspect(
-            io.BytesIO(wav_factory(0)), filename="empty.wav", content_type="audio/wav"
         )
 
 
@@ -66,69 +100,37 @@ def test_rejects_audio_container_without_samples(wav_factory: Callable[[float], 
         ("sample.webm", "video/webm", "webm"),
     ],
 )
-def test_inspects_video_with_audio_and_resets_stream(
+def test_normalizes_video_audio_stream(
     video_with_audio_factory: Callable[[str, float], bytes],
     filename: str,
     content_type: str,
     container_format: str,
 ) -> None:
-    media = io.BytesIO(video_with_audio_factory(container_format, 0.5))
-    media.seek(11)
-
-    metadata = PyAvMediaInspector().inspect(
-        media,
+    normalized = PyAvMediaNormalizer().normalize(
+        io.BytesIO(video_with_audio_factory(container_format, 0.5)),
         filename=filename,
         content_type=content_type,
     )
 
-    assert metadata.duration_seconds == pytest.approx(0.5, abs=0.1)
-    assert media.tell() == 0
-    assert not media.closed
+    assert normalized.duration_seconds == pytest.approx(0.5, abs=0.1)
+    assert len(normalized.chunks) == 1
 
 
 def test_rejects_video_without_audio(
     video_without_audio_factory: Callable[[str, float], bytes],
 ) -> None:
     with pytest.raises(NoAudioStreamError):
-        PyAvMediaInspector().inspect(
+        PyAvMediaNormalizer().normalize(
             io.BytesIO(video_without_audio_factory("mp4", 0.25)),
             filename="silent.mp4",
             content_type="video/mp4",
         )
 
 
-def test_rejects_corrupt_video_container() -> None:
-    with pytest.raises(UnsupportedMediaError):
-        PyAvMediaInspector().inspect(
-            io.BytesIO(b"not an mp4"),
-            filename="broken.mp4",
-            content_type="video/mp4",
-        )
-
-
-@pytest.mark.parametrize("declared_duration", [None, 1])
-def test_decoded_duration_is_bounded_even_with_missing_or_wrong_metadata(
-    monkeypatch: pytest.MonkeyPatch, declared_duration: int | None
-) -> None:
-    stream = SimpleNamespace(duration=declared_duration, time_base=Fraction(1, 16000))
-    container = MagicMock()
-    container.__enter__.return_value = container
-    container.streams.audio = [stream]
-    container.duration = None
-    decoded: list[int] = []
-
-    def decode(_stream: object) -> Iterator[SimpleNamespace]:
-        for index in range(100):
-            decoded.append(index)
-            yield SimpleNamespace(samples=16000, sample_rate=16000)
-
-    container.decode.side_effect = decode
-    monkeypatch.setattr("transcription_service.adapters.media.av.open", lambda *a, **kw: container)
-    media = io.BytesIO(b"audio")
+def test_decoded_duration_is_bounded(wav_factory: Callable[[float], bytes]) -> None:
     with pytest.raises(MediaTooLongError):
-        PyAvMediaInspector(max_duration_seconds=2.5).inspect(
-            media, filename="sample.wav", content_type="audio/wav"
+        PyAvMediaNormalizer(max_duration_seconds=0.1).normalize(
+            io.BytesIO(wav_factory(0.25)),
+            filename="sample.wav",
+            content_type="audio/wav",
         )
-    assert decoded == [0, 1, 2]
-    assert media.tell() == 0
-    assert not media.closed

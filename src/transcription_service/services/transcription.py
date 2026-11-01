@@ -1,34 +1,33 @@
 """Upload validation and bounded execution of the transcription pipeline."""
 
-import asyncio
-from functools import partial
+import os
+from pathlib import Path
 from time import perf_counter
 from typing import BinaryIO
 
-import anyio
 import structlog
+from pydantic import TypeAdapter, ValidationError
 
 from transcription_service.core.config import Settings
 from transcription_service.core.errors import (
     ApplicationError,
     EmptyUploadError,
     InvalidLanguageError,
-    MediaTooLongError,
-    ModelBusyError,
     ModelInferenceError,
     UploadTooLargeError,
 )
 from transcription_service.domain import (
     AudioMode,
     CompletedTranscription,
-    MediaInspector,
-    ModelProfile,
+    MediaNormalizer,
+    NormalizedMedia,
+    SegmentResult,
     Transcriber,
-    TranscriberFactory,
+    TranscriptionResult,
 )
-from transcription_service.services.models import ModelRegistry
 
 logger = structlog.get_logger(__name__)
+checkpoint_adapter = TypeAdapter(dict[int, TranscriptionResult])
 
 
 class TranscriptionService:
@@ -37,17 +36,14 @@ class TranscriptionService:
     def __init__(
         self,
         transcriber: Transcriber,
-        media_inspector: MediaInspector,
+        media_normalizer: MediaNormalizer,
         settings: Settings,
-        *,
-        transcriber_factory: TranscriberFactory | None = None,
     ) -> None:
-        self._models = ModelRegistry(transcriber, settings, transcriber_factory)
-        self._media_inspector = media_inspector
+        self._transcriber = transcriber
+        self._media_normalizer = media_normalizer
         self._settings = settings
-        self._inference_slots = asyncio.Semaphore(settings.max_concurrent_transcriptions)
 
-    async def transcribe(
+    def transcribe(
         self,
         media: BinaryIO,
         *,
@@ -56,90 +52,119 @@ class TranscriptionService:
         content_type: str | None,
         language: str | None,
         audio_mode: AudioMode,
-        model_profile: ModelProfile = ModelProfile.FASTER,
+        checkpoint_path: Path | None = None,
     ) -> CompletedTranscription:
         if size_bytes <= 0:
             raise EmptyUploadError
         if size_bytes > self._settings.max_upload_bytes:
             raise UploadTooLargeError(self._settings.max_upload_bytes)
 
-        try:
-            await asyncio.wait_for(
-                self._inference_slots.acquire(),
-                timeout=self._settings.inference_queue_timeout_seconds,
-            )
-        except TimeoutError as exc:
-            raise ModelBusyError(self._settings.inference_queue_timeout_seconds) from exc
-
-        try:
-            # Cancellation must not close a stream or release capacity while its thread uses it.
-            worker = asyncio.create_task(
-                anyio.to_thread.run_sync(
-                    partial(
-                        self._transcribe_blocking,
-                        media,
-                        filename=filename,
-                        content_type=content_type,
-                        language=language,
-                        audio_mode=audio_mode,
-                        model_profile=model_profile,
-                    )
-                )
-            )
-            try:
-                return await asyncio.shield(worker)
-            except asyncio.CancelledError:
-                with anyio.CancelScope(shield=True):
-                    while not worker.done():
-                        try:
-                            await asyncio.shield(worker)
-                        except asyncio.CancelledError:
-                            continue
-                        except Exception:
-                            break  # The blocking pipeline logs and sanitizes its own failures.
-                    if not worker.cancelled():
-                        worker.exception()  # Retrieve failures even when the caller has gone away.
-                raise
-        finally:
-            self._inference_slots.release()
-
-    def _transcribe_blocking(
-        self,
-        media: BinaryIO,
-        *,
-        filename: str | None,
-        content_type: str | None,
-        language: str | None,
-        audio_mode: AudioMode,
-        model_profile: ModelProfile,
-    ) -> CompletedTranscription:
         started_at = perf_counter()
+        normalized: NormalizedMedia | None = None
         try:
-            metadata = self._media_inspector.inspect(
+            normalized = self._media_normalizer.normalize(
                 media, filename=filename, content_type=content_type
             )
-            self._validate_duration(metadata.duration_seconds)
-            transcriber = self._models.get(model_profile)
+            if normalized.is_silent:
+                return CompletedTranscription(
+                    result=TranscriptionResult(
+                        text="",
+                        language=language or "und",
+                        language_probability=1.0 if language else 0.0,
+                        duration_seconds=normalized.duration_seconds,
+                        segments=(),
+                    ),
+                    processing_time_seconds=perf_counter() - started_at,
+                    model_id=self._transcriber.model_id,
+                    warnings=("no_speech_detected",),
+                )
+
+            transcriber = self._transcriber
             if language is not None and language not in transcriber.supported_languages:
                 raise InvalidLanguageError(language)
 
-            media.seek(0)
-            result = transcriber.transcribe(media, language=language, audio_mode=audio_mode)
-            self._validate_duration(result.duration_seconds)
+            results = self._load_checkpoint(checkpoint_path)
+            for chunk in normalized.chunks:
+                if chunk.index in results:
+                    continue
+                for attempt in range(1, self._settings.chunk_max_attempts + 1):
+                    try:
+                        chunk.media.seek(0)
+                        results[chunk.index] = transcriber.transcribe(
+                            chunk.media,
+                            language=language,
+                            audio_mode=audio_mode,
+                        )
+                        self._save_checkpoint(checkpoint_path, results)
+                        break
+                    except Exception:
+                        if attempt >= self._settings.chunk_max_attempts:
+                            raise
+                        logger.warning(
+                            "transcription_chunk_retry",
+                            chunk_index=chunk.index,
+                            attempt=attempt,
+                        )
+
+            result = self._assemble(normalized, results)
             return CompletedTranscription(
                 result=result,
                 processing_time_seconds=perf_counter() - started_at,
                 model_id=transcriber.model_id,
+                warnings=("no_speech_detected",) if not result.text else (),
             )
         except ApplicationError:
             raise
         except Exception as exc:
-            logger.exception("transcription_pipeline_failed", model_profile=model_profile.value)
+            logger.exception("transcription_pipeline_failed", model=self._transcriber.model_id)
             raise ModelInferenceError from exc
+        finally:
+            if normalized is not None:
+                for chunk in normalized.chunks:
+                    chunk.media.close()
 
-    def _validate_duration(self, duration_seconds: float | None) -> None:
-        if (
-            duration_seconds is not None
-            and duration_seconds > self._settings.max_media_duration_seconds
-        ):
-            raise MediaTooLongError(self._settings.max_media_duration_seconds)
+    @staticmethod
+    def _assemble(
+        normalized: NormalizedMedia,
+        results: dict[int, TranscriptionResult],
+    ) -> TranscriptionResult:
+        ordered = [(chunk, results[chunk.index]) for chunk in normalized.chunks]
+        segments: list[SegmentResult] = []
+        for chunk, result in ordered:
+            for segment in result.segments:
+                start = chunk.start_seconds + segment.start
+                end = min(normalized.duration_seconds, chunk.start_seconds + segment.end)
+                if start < end:
+                    segments.append(SegmentResult(start=start, end=end, text=segment.text))
+        best_language = max(
+            (result for _, result in ordered),
+            key=lambda result: result.language_probability,
+        )
+        return TranscriptionResult(
+            text=" ".join(result.text for _, result in ordered if result.text).strip(),
+            language=best_language.language,
+            language_probability=best_language.language_probability,
+            duration_seconds=normalized.duration_seconds,
+            segments=tuple(segments),
+        )
+
+    @staticmethod
+    def _load_checkpoint(path: Path | None) -> dict[int, TranscriptionResult]:
+        if path is None or not path.exists():
+            return {}
+        try:
+            return checkpoint_adapter.validate_json(path.read_bytes())
+        except (OSError, ValidationError):
+            logger.warning("transcription_checkpoint_invalid", path=str(path))
+            return {}
+
+    @staticmethod
+    def _save_checkpoint(
+        path: Path | None,
+        results: dict[int, TranscriptionResult],
+    ) -> None:
+        if path is None:
+            return
+        temporary = path.with_suffix(f"{path.suffix}.tmp")
+        temporary.write_bytes(checkpoint_adapter.dump_json(results))
+        os.replace(temporary, path)

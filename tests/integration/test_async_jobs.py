@@ -1,6 +1,5 @@
 """Durable asynchronous job API and worker integration tests."""
 
-from collections.abc import Callable
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -9,7 +8,7 @@ from fastapi.testclient import TestClient
 from tests.conftest import FakeTranscriber, make_wav_bytes
 from tests.job_fakes import MemoryJobBroker, MemoryJobRepository
 from transcription_service.adapters.jobs import LocalMediaStore
-from transcription_service.adapters.media import PyAvMediaInspector
+from transcription_service.adapters.media import PyAvMediaNormalizer
 from transcription_service.core.config import Settings
 from transcription_service.jobs.domain import JobStatus
 from transcription_service.main import create_app
@@ -21,7 +20,6 @@ from transcription_service.services.transcription import TranscriptionService
 def _async_settings(settings: Settings, media_path: Path) -> Settings:
     return settings.model_copy(
         update={
-            "async_jobs_enabled": True,
             "media_storage_path": media_path,
         }
     )
@@ -32,13 +30,9 @@ def _async_app(
     repository: MemoryJobRepository,
     broker: MemoryJobBroker,
     media_store: LocalMediaStore,
-    *,
-    transcriber_factory: Callable[[Settings], FakeTranscriber] | None = None,
 ) -> FastAPI:
-    factory = transcriber_factory or (lambda _: FakeTranscriber())
     return create_app(
         settings,
-        transcriber_factory=factory,
         job_repository=repository,
         job_broker=broker,
         media_store=media_store,
@@ -54,18 +48,7 @@ def test_async_upload_is_durable_before_accepted(
     media_store = LocalMediaStore(tmp_path / "media")
     async_settings = _async_settings(settings, tmp_path / "media")
 
-    def fail_if_loaded(_: Settings) -> FakeTranscriber:
-        raise AssertionError("the API process must not load an inference model")
-
-    with TestClient(
-        _async_app(
-            async_settings,
-            repository,
-            broker,
-            media_store,
-            transcriber_factory=fail_if_loaded,
-        )
-    ) as client:
+    with TestClient(_async_app(async_settings, repository, broker, media_store)) as client:
         response = client.post(
             "/v1/transcriptions",
             files={"file": ("sample.wav", make_wav_bytes(), "audio/wav")},
@@ -128,7 +111,7 @@ def test_worker_completes_job_and_exposes_result(
 
         service = TranscriptionService(
             FakeTranscriber(),
-            PyAvMediaInspector(max_duration_seconds=900),
+            PyAvMediaNormalizer(max_duration_seconds=900),
             settings,
         )
         worker = TranscriptionJobWorker(
@@ -142,15 +125,56 @@ def test_worker_completes_job_and_exposes_result(
 
         status = client.get(accepted["status_url"])
         result = client.get(accepted["result_url"])
+        text_result = client.get(f"{accepted['result_url']}?format=txt")
+        srt_result = client.get(f"{accepted['result_url']}?format=srt")
+        vtt_result = client.get(f"{accepted['result_url']}?format=vtt")
 
     assert status.status_code == 200
     assert status.json()["status"] == "succeeded"
     assert result.status_code == 200
     assert result.json()["job_id"] == accepted["id"]
     assert result.json()["text"] == "Hello world"
+    assert text_result.text == "Hello world\n"
+    assert text_result.headers["content-disposition"].endswith('.txt"')
+    assert "00:00:00,000 --> 00:00:00,250" in srt_result.text
+    assert vtt_result.text.startswith("WEBVTT\n\n")
     completed_job = repository.get(accepted["id"])
     assert completed_job is not None
     assert not media_store.path_for(completed_job.media_key).exists()
+
+
+def test_silent_job_succeeds_with_explicit_warning(settings: Settings, tmp_path: Path) -> None:
+    repository = MemoryJobRepository()
+    broker = MemoryJobBroker()
+    media_store = LocalMediaStore(tmp_path / "media")
+    async_settings = _async_settings(settings, tmp_path / "media")
+    transcriber = FakeTranscriber()
+
+    with TestClient(_async_app(async_settings, repository, broker, media_store)) as client:
+        accepted = client.post(
+            "/v1/transcriptions",
+            files={"file": ("silence.wav", make_wav_bytes(sample=0), "audio/wav")},
+        ).json()
+        worker = TranscriptionJobWorker(
+            repository,
+            broker,
+            media_store,
+            InlineJobRunner(
+                TranscriptionService(
+                    transcriber,
+                    PyAvMediaNormalizer(max_duration_seconds=900),
+                    settings,
+                )
+            ),
+            async_settings,
+        )
+        worker.process(accepted["id"])
+        result = client.get(accepted["result_url"])
+
+    assert result.status_code == 200
+    assert result.json()["text"] == ""
+    assert result.json()["warnings"] == ["no_speech_detected"]
+    assert transcriber.requested_languages == []
 
 
 def test_async_upload_enforces_exact_file_size(

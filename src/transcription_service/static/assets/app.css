@@ -152,7 +152,7 @@ h2 { margin-bottom: 0; font-family: Manrope, sans-serif; font-size: 21px; font-w
 
 .submit-button { width: 100%; min-height: 48px; display: flex; align-items: center; justify-content: space-between; padding: 0 16px; border: 0; border-radius: 6px; background: var(--green); color: #fff; font-size: 12px; font-weight: 600; cursor: pointer; transition: background 150ms ease, transform 150ms ease; }
 .submit-button:hover:not(:disabled) { background: var(--green-dark); transform: translateY(-1px); }
-.submit-button:focus-visible, .text-button:focus-visible, .icon-button:focus-visible { outline: 3px solid rgb(36 109 81 / 28%); outline-offset: 2px; }
+.submit-button:focus-visible, .text-button:focus-visible, .icon-button:focus-visible, .format-select:focus-visible { outline: 3px solid rgb(36 109 81 / 28%); outline-offset: 2px; }
 .submit-button:disabled { background: #aebbb1; cursor: not-allowed; }
 .button-arrow { font-size: 17px; font-weight: 400; }
 .privacy-note { display: flex; align-items: center; justify-content: center; gap: 6px; margin: 12px 0 0; color: #92978e; font-size: 9px; text-align: center; }
@@ -175,7 +175,8 @@ h2 { margin-bottom: 0; font-family: Manrope, sans-serif; font-size: 21px; font-w
 .transcript-content { min-width: 0; }
 .result-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; padding-bottom: 11px; border-bottom: 1px solid #edeee7; }
 .result-meta { min-width: 0; overflow-wrap: anywhere; color: #858b82; font-size: 9px; }
-.action-buttons { display: flex; gap: 5px; }
+.action-buttons { display: flex; align-items: center; gap: 5px; }
+.format-select { height: 26px; padding: 0 5px; border: 1px solid #dedfd7; border-radius: 5px; background: var(--paper); color: #596159; font-size: 9px; }
 .text-button { padding: 6px 8px; border: 0; border-radius: 5px; background: transparent; color: var(--green); font-size: 10px; font-weight: 600; cursor: pointer; }
 .text-button:hover { background: var(--green-soft); }
 .copy-feedback { min-height: 15px; margin: 6px 0 0; color: var(--green); font-size: 9px; }

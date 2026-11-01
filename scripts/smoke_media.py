@@ -4,11 +4,11 @@ import argparse
 import json
 import mimetypes
 from pathlib import Path
+from time import monotonic, sleep
 
-from fastapi.testclient import TestClient
+import httpx2
 
 from transcription_service.domain import AudioMode, ModelProfile
-from transcription_service.main import create_app
 
 
 def _sample(value: str) -> tuple[str, Path]:
@@ -44,12 +44,23 @@ def main() -> None:
         default=ModelProfile.FASTER.value,
         help="faster uses the default model; larger loads the optional larger model",
     )
+    parser.add_argument(
+        "--base-url",
+        default="http://localhost:8000",
+        help="running asynchronous service URL",
+    )
+    parser.add_argument(
+        "--timeout-seconds",
+        type=float,
+        default=1800,
+        help="maximum time to wait for each job",
+    )
     args = parser.parse_args()
 
-    with TestClient(create_app()) as client:
+    with httpx2.Client(base_url=args.base_url, timeout=30) as client:
         ready = client.get("/health/ready")
         if ready.status_code != 200:
-            raise SystemExit(f"model did not become ready: {ready.text}")
+            raise SystemExit(f"job service did not become ready: {ready.text}")
 
         for language, path in args.sample:
             content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
@@ -63,10 +74,26 @@ def main() -> None:
                         "model_profile": args.model_profile,
                     },
                 )
-            if response.status_code != 200:
+            if response.status_code != 202:
                 raise SystemExit(f"{path.name} failed: {response.status_code} {response.text}")
 
-            payload = response.json()
+            accepted = response.json()
+            deadline = monotonic() + args.timeout_seconds
+            while True:
+                status_response = client.get(accepted["status_url"])
+                status_response.raise_for_status()
+                status = status_response.json()
+                if status["status"] == "succeeded":
+                    break
+                if status["status"] in {"failed", "expired"}:
+                    raise SystemExit(f"{path.name} ended as {status['status']}: {status}")
+                if monotonic() >= deadline:
+                    raise SystemExit(f"{path.name} did not finish before the smoke-test deadline")
+                sleep(1)
+
+            result_response = client.get(accepted["result_url"])
+            result_response.raise_for_status()
+            payload = result_response.json()
             if not payload["text"]:
                 raise SystemExit(f"{path.name} returned an empty transcription")
             print(json.dumps(payload, ensure_ascii=False, indent=2))

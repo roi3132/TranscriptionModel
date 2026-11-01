@@ -1,13 +1,11 @@
 """Health endpoint integration tests."""
 
 import re
-from typing import NoReturn
 
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from tests.conftest import FakeTranscriber
-from transcription_service.core.config import Settings
-from transcription_service.main import create_app
+from tests.job_fakes import MemoryJobRepository
 
 
 def test_liveness_does_not_depend_on_model(client: TestClient) -> None:
@@ -18,12 +16,12 @@ def test_liveness_does_not_depend_on_model(client: TestClient) -> None:
     assert re.fullmatch(r"[a-f0-9]{32}", response.headers["X-Request-ID"])
 
 
-def test_readiness_fails_when_model_initialization_fails(settings: Settings) -> None:
-    def fail_to_load(_: Settings) -> NoReturn:
-        raise RuntimeError("model failed to load")
-
-    failed_app = create_app(settings, transcriber_factory=fail_to_load)
-    with TestClient(failed_app) as failed_client:
+def test_readiness_fails_when_job_store_initialization_fails(
+    app: FastAPI,
+    job_repository: MemoryJobRepository,
+) -> None:
+    job_repository.ping_fails = True
+    with TestClient(app) as failed_client:
         response = failed_client.get(
             "/health/ready",
             headers={"X-Request-ID": "test-request-42"},
@@ -33,14 +31,14 @@ def test_readiness_fails_when_model_initialization_fails(settings: Settings) -> 
     assert response.headers["X-Request-ID"] == "test-request-42"
     assert response.json() == {
         "error": {
-            "code": "model_not_ready",
-            "message": "The transcription model is not ready.",
+            "code": "job_service_not_ready",
+            "message": "The transcription job service is not ready.",
             "request_id": "test-request-42",
         }
     }
 
 
-def test_readiness_succeeds_after_model_load(client: TestClient) -> None:
+def test_readiness_succeeds_when_job_service_is_ready(client: TestClient) -> None:
     response = client.get("/health/ready")
 
     assert response.status_code == 200
@@ -74,9 +72,7 @@ def test_method_not_allowed_preserves_allow_header(client: TestClient) -> None:
     assert response.headers["allow"] == "POST"
 
 
-def test_unexpected_errors_keep_request_id_without_leaking_details(settings: Settings) -> None:
-    app = create_app(settings, transcriber_factory=lambda _: FakeTranscriber())
-
+def test_unexpected_errors_keep_request_id_without_leaking_details(app: FastAPI) -> None:
     @app.get("/explode")
     async def explode() -> None:
         raise RuntimeError("private internal failure")

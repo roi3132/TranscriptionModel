@@ -13,13 +13,11 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import RequestResponseEndpoint
 
 from transcription_service import __version__
-from transcription_service.adapters.faster_whisper import FasterWhisperTranscriber
 from transcription_service.adapters.jobs import (
     LocalMediaStore,
     PostgresJobRepository,
     RedisJobBroker,
 )
-from transcription_service.adapters.media import PyAvMediaInspector
 from transcription_service.api.health import router as health_router
 from transcription_service.api.transcriptions import router as transcription_router
 from transcription_service.api.ui import STATIC_DIRECTORY
@@ -27,11 +25,10 @@ from transcription_service.api.ui import router as ui_router
 from transcription_service.core.config import Settings, get_settings
 from transcription_service.core.errors import register_exception_handlers
 from transcription_service.core.logging import configure_logging
+from transcription_service.core.rate_limit import LocalRateLimiter
 from transcription_service.core.status import RuntimeStatus
-from transcription_service.domain import MediaInspector, TranscriberFactory
 from transcription_service.jobs.domain import JobBroker, JobRepository, MediaStore
 from transcription_service.services.jobs import JobSubmissionService
-from transcription_service.services.transcription import TranscriptionService
 
 logger = structlog.get_logger(__name__)
 REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
@@ -43,15 +40,9 @@ def _request_id(header_value: str | None) -> str:
     return uuid4().hex
 
 
-def _default_transcriber_factory(settings: Settings) -> FasterWhisperTranscriber:
-    return FasterWhisperTranscriber.from_settings(settings)
-
-
 def create_app(
     settings: Settings | None = None,
     *,
-    transcriber_factory: TranscriberFactory = _default_transcriber_factory,
-    media_inspector: MediaInspector | None = None,
     job_repository: JobRepository | None = None,
     job_broker: JobBroker | None = None,
     media_store: MediaStore | None = None,
@@ -61,9 +52,6 @@ def create_app(
     resolved_settings = settings or get_settings()
     configure_logging(resolved_settings.log_level)
     runtime_status = RuntimeStatus()
-    resolved_media_inspector = media_inspector or PyAvMediaInspector(
-        max_duration_seconds=resolved_settings.max_media_duration_seconds
-    )
 
     @asynccontextmanager
     async def lifespan(lifespan_app: FastAPI) -> AsyncIterator[None]:
@@ -73,54 +61,32 @@ def create_app(
             version=__version__,
         )
         try:
-            if resolved_settings.async_jobs_enabled:
-                repository = job_repository or PostgresJobRepository(resolved_settings.database_url)
-                broker = job_broker or RedisJobBroker(
-                    resolved_settings.redis_url, resolved_settings.redis_queue_name
+            repository = job_repository or PostgresJobRepository(resolved_settings.database_url)
+            broker = job_broker or RedisJobBroker(
+                resolved_settings.redis_url, resolved_settings.redis_queue_name
+            )
+            storage = media_store or LocalMediaStore(resolved_settings.media_storage_path)
+            try:
+                await anyio.to_thread.run_sync(repository.migrate)
+                await anyio.to_thread.run_sync(repository.ping)
+                await anyio.to_thread.run_sync(broker.ping)
+                lifespan_app.state.job_service = JobSubmissionService(
+                    repository,
+                    broker,
+                    storage,
+                    resolved_settings,
                 )
-                storage = media_store or LocalMediaStore(resolved_settings.media_storage_path)
-                try:
-                    await anyio.to_thread.run_sync(repository.migrate)
-                    await anyio.to_thread.run_sync(repository.ping)
-                    await anyio.to_thread.run_sync(broker.ping)
-                    lifespan_app.state.job_service = JobSubmissionService(
-                        repository,
-                        broker,
-                        storage,
-                        resolved_settings,
-                    )
-                    runtime_status.mark_ready()
-                    await logger.ainfo("job_api_ready")
-                except Exception as exc:
-                    runtime_status.mark_unavailable(type(exc).__name__)
-                    await logger.aexception(
-                        "job_infrastructure_initialization_failed",
-                        exception_type=type(exc).__name__,
-                    )
-            else:
-                try:
-                    transcriber = await anyio.to_thread.run_sync(
-                        transcriber_factory,
-                        resolved_settings,
-                    )
-                    lifespan_app.state.transcription_service = TranscriptionService(
-                        transcriber,
-                        resolved_media_inspector,
-                        resolved_settings,
-                        transcriber_factory=transcriber_factory,
-                    )
-                    runtime_status.mark_ready()
-                    await logger.ainfo("transcription_model_ready", model=transcriber.model_id)
-                except Exception as exc:
-                    runtime_status.mark_unavailable(type(exc).__name__)
-                    await logger.aexception(
-                        "transcription_model_initialization_failed",
-                        exception_type=type(exc).__name__,
-                    )
+                runtime_status.mark_ready()
+                await logger.ainfo("job_api_ready")
+            except Exception as exc:
+                runtime_status.mark_unavailable(type(exc).__name__)
+                await logger.aexception(
+                    "job_infrastructure_initialization_failed",
+                    exception_type=type(exc).__name__,
+                )
             yield
         finally:
             runtime_status.mark_unavailable()
-            lifespan_app.state.transcription_service = None
             service: JobSubmissionService | None = lifespan_app.state.job_service
             if service is not None:
                 await anyio.to_thread.run_sync(service.broker.close)
@@ -135,9 +101,12 @@ def create_app(
     )
     application.state.settings = resolved_settings
     application.state.runtime_status = runtime_status
-    application.state.transcription_service = None
     application.state.job_service = None
     application.state.upload_slots = anyio.CapacityLimiter(resolved_settings.max_concurrent_uploads)
+    application.state.rate_limiter = LocalRateLimiter(
+        resolved_settings.rate_limit_requests,
+        resolved_settings.rate_limit_window_seconds,
+    )
 
     register_exception_handlers(application)
     application.include_router(health_router)

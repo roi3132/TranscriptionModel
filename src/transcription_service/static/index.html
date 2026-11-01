@@ -20,7 +20,7 @@
       </a>
       <div class="service-status" id="service-status" role="status" aria-live="polite">
         <span class="status-dot" aria-hidden="true"></span>
-        <span id="service-status-text">Checking model…</span>
+        <span id="service-status-text">Checking service…</span>
       </div>
     </header>
 
@@ -30,7 +30,7 @@
         <h1 id="page-title">Your recordings,<br><span>in clear text.</span></h1>
         <p class="intro-copy">
           Turn audio and video into readable, timestamped transcripts. Hebrew, English, and more,
-          processed on this service without saving your media.
+          processed by the local worker with explicit retention limits.
         </p>
       </section>
 
@@ -118,7 +118,7 @@
           </button>
           <p class="privacy-note">
             <span class="privacy-lock" aria-hidden="true">◆</span>
-            Your file is processed for this request and not stored.
+            Successful uploads are deleted after processing; failed uploads expire automatically.
           </p>
         </form>
 
@@ -149,7 +149,14 @@
               <span class="result-meta" id="result-meta"></span>
               <div class="action-buttons">
                 <button class="text-button" id="copy-button" type="button">Copy text</button>
-                <button class="text-button" id="download-button" type="button">Download .txt</button>
+                <label class="visually-hidden" for="download-format">Download format</label>
+                <select class="format-select" id="download-format" aria-label="Download format">
+                  <option value="txt">TXT</option>
+                  <option value="srt">SRT</option>
+                  <option value="vtt">VTT</option>
+                  <option value="json">JSON</option>
+                </select>
+                <button class="text-button" id="download-button" type="button">Download</button>
               </div>
             </div>
             <p class="copy-feedback" id="copy-feedback" aria-live="polite"></p>

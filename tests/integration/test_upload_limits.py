@@ -2,21 +2,44 @@
 
 import asyncio
 from collections.abc import AsyncIterator
+from pathlib import Path
 from tempfile import SpooledTemporaryFile
 from typing import Any
 
 import httpx2
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from tests.conftest import FakeTranscriber, make_wav_bytes
+from tests.conftest import make_wav_bytes
+from tests.job_fakes import MemoryJobBroker, MemoryJobRepository
+from transcription_service.adapters.jobs import LocalMediaStore
 from transcription_service.api.uploads import MULTIPART_OVERHEAD_BYTES
 from transcription_service.core.config import Settings
 from transcription_service.main import create_app
 
 
-def test_rejects_oversized_declared_body_before_reading(settings: Settings) -> None:
-    app = create_app(settings, transcriber_factory=lambda _: FakeTranscriber())
+def _app(
+    settings: Settings,
+    repository: MemoryJobRepository,
+    broker: MemoryJobBroker,
+    media_store: LocalMediaStore,
+) -> FastAPI:
+    return create_app(
+        settings,
+        job_repository=repository,
+        job_broker=broker,
+        media_store=media_store,
+    )
+
+
+def test_rejects_oversized_declared_body_before_reading(
+    settings: Settings,
+    job_repository: MemoryJobRepository,
+    job_broker: MemoryJobBroker,
+    media_store: LocalMediaStore,
+) -> None:
+    app = _app(settings, job_repository, job_broker, media_store)
     consumed: list[bool] = []
 
     async def body() -> AsyncIterator[bytes]:
@@ -42,10 +65,14 @@ def test_rejects_oversized_declared_body_before_reading(settings: Settings) -> N
 
 
 def test_chunked_upload_limit_closes_partial_files(
-    settings: Settings, monkeypatch: pytest.MonkeyPatch
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+    job_repository: MemoryJobRepository,
+    job_broker: MemoryJobBroker,
+    media_store: LocalMediaStore,
 ) -> None:
     settings = settings.model_copy(update={"max_upload_bytes": 32})
-    app = create_app(settings, transcriber_factory=lambda _: FakeTranscriber())
+    app = _app(settings, job_repository, job_broker, media_store)
     opened: list[Any] = []
     consumed: list[int] = []
 
@@ -94,9 +121,14 @@ def test_rejects_extra_file_parts_before_inference(client: TestClient) -> None:
     assert response.status_code == 400
 
 
-def test_upload_admission_limit_applies_before_body_is_read(settings: Settings) -> None:
+def test_upload_admission_limit_applies_before_body_is_read(
+    settings: Settings,
+    job_repository: MemoryJobRepository,
+    job_broker: MemoryJobBroker,
+    media_store: LocalMediaStore,
+) -> None:
     settings = settings.model_copy(update={"max_concurrent_uploads": 1})
-    app = create_app(settings, transcriber_factory=lambda _: FakeTranscriber())
+    app = _app(settings, job_repository, job_broker, media_store)
 
     async def scenario() -> None:
         started = asyncio.Event()
@@ -140,6 +172,33 @@ def test_upload_admission_limit_applies_before_body_is_read(settings: Settings) 
             finally:
                 release.set()
                 completed = await first
-            assert completed.status_code == 200
+            assert completed.status_code == 202
 
     asyncio.run(scenario())
+
+
+def test_upload_rate_limit_returns_retry_after(
+    settings: Settings,
+    tmp_path: Path,
+) -> None:
+    repository = MemoryJobRepository()
+    broker = MemoryJobBroker()
+    media_store = LocalMediaStore(tmp_path / "media")
+    limited = settings.model_copy(
+        update={"rate_limit_requests": 1, "rate_limit_window_seconds": 30}
+    )
+
+    with TestClient(_app(limited, repository, broker, media_store)) as client:
+        first = client.post(
+            "/v1/transcriptions",
+            files={"file": ("first.wav", make_wav_bytes(), "audio/wav")},
+        )
+        second = client.post(
+            "/v1/transcriptions",
+            files={"file": ("second.wav", make_wav_bytes(), "audio/wav")},
+        )
+
+    assert first.status_code == 202
+    assert second.status_code == 429
+    assert second.json()["error"]["code"] == "rate_limit_exceeded"
+    assert second.headers["Retry-After"] == "30"

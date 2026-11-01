@@ -35,14 +35,6 @@ class ApplicationError(Exception):
         super().__init__(self.client_message)
 
 
-class ModelNotReadyError(ApplicationError):
-    """Raised while the inference model is unavailable."""
-
-    code = "model_not_ready"
-    status_code = HTTPStatus.SERVICE_UNAVAILABLE
-    default_message = "The transcription model is not ready."
-
-
 class EmptyUploadError(ApplicationError):
     """Raised when the uploaded file has no content."""
 
@@ -78,7 +70,7 @@ class NoAudioStreamError(ApplicationError):
 
 
 class MediaTooLongError(ApplicationError):
-    """Raised when media duration exceeds the synchronous API limit."""
+    """Raised when media duration exceeds the worker processing limit."""
 
     code = "media_too_long"
     status_code = HTTPStatus.REQUEST_ENTITY_TOO_LARGE
@@ -95,19 +87,6 @@ class InvalidLanguageError(ApplicationError):
 
     def __init__(self, language: str) -> None:
         super().__init__(f"Language code '{language}' is not supported by the configured model.")
-
-
-class ModelBusyError(ApplicationError):
-    """Raised when inference capacity is unavailable within the queue timeout."""
-
-    code = "model_busy"
-    status_code = HTTPStatus.SERVICE_UNAVAILABLE
-    default_message = "The transcription model is busy. Try again shortly."
-
-    def __init__(self, retry_after_seconds: float) -> None:
-        super().__init__(
-            headers={"Retry-After": str(max(1, round(retry_after_seconds)))},
-        )
 
 
 class ModelInferenceError(ApplicationError):
@@ -194,6 +173,17 @@ class MediaStorageFullError(ApplicationError):
     code = "media_storage_full"
     status_code = HTTPStatus.INSUFFICIENT_STORAGE
     default_message = "The transcription media store is full. Try again later."
+
+
+class RateLimitExceededError(ApplicationError):
+    """Raised when one client exceeds the local upload admission policy."""
+
+    code = "rate_limit_exceeded"
+    status_code = HTTPStatus.TOO_MANY_REQUESTS
+    default_message = "Too many transcription requests. Try again later."
+
+    def __init__(self, retry_after_seconds: int) -> None:
+        super().__init__(headers={"Retry-After": str(retry_after_seconds)})
 
 
 def _request_id(request: Request) -> str:

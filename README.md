@@ -3,17 +3,15 @@
 A production-minded FastAPI service that accepts an audio or video file and returns a timestamped
 transcription produced by an open multilingual Whisper model from Hugging Face.
 
-The service supports a durable asynchronous workflow in Docker Compose and a compatibility
-synchronous workflow for native development. Compose runs the API, an independent inference
-worker, Redis, and PostgreSQL entirely on the local machine—no hosted service or subscription is
-required. See [`docs/architecture-plan.html`](docs/architecture-plan.html) for completed Phases 6–7
-and the ordered media/product roadmap.
+The service is asynchronous-only. Docker Compose runs the API, an independent inference worker,
+Redis, and PostgreSQL entirely on the local machine—no hosted service or subscription is required.
+See [`docs/architecture-plan.html`](docs/architecture-plan.html) for the completed Phases 6–8 plan.
 
 ## Current capabilities
 
 - Upload WAV, MP3, M4A/AAC, FLAC, OGG, Opus, MP4, MOV, WebM, or MKV through
   `multipart/form-data`.
-- Transcribe the first audio stream from a supported video container without a separate video path.
+- Decode the first audio stream and normalize it to 16 kHz mono PCM before inference.
 - Transcribe Hebrew (`he`), English (`en`), or another Whisper-supported language.
 - Automatically detect the language with `language=auto`.
 - Choose `audio_mode=speech` for faster VAD-filtered processing or `audio_mode=music` to process the
@@ -22,10 +20,14 @@ and the ordered media/product roadmap.
   independently of Speech/Music mode. Larger does not guarantee more accurate lyrics.
 - Return full text, detected-language confidence, media duration, processing time, and timestamped
   segments.
+- Split normalized long recordings into resumable chunks, retry each chunk independently, and
+  assemble text and timestamps in source order.
+- Return a deliberate `no_speech_detected` warning for exact silence or an empty model result.
+- Download completed results as JSON, TXT, SRT, or WebVTT from one timestamped result model.
 - Accept uploads durably with `202 Accepted`, then expose job status and result resources.
 - Keep accepted jobs and completed results across independent API and worker restarts in local
   PostgreSQL; persist queued media and the Redis queue in named Docker volumes.
-- Run every asynchronous attempt in a terminable child process with a hard deadline.
+- Run every attempt in a terminable child process with a hard deadline.
 - Retry transient failures with bounded exponential backoff, recover expired worker leases, and use
   atomic PostgreSQL claims so multiple workers cannot execute the same attempt concurrently.
 - Support `Idempotency-Key` and SHA-256 result reuse keyed by media, model revision, language,
@@ -33,7 +35,10 @@ and the ordered media/product roadmap.
 - Retain failed media for 24 hours and completed JSON results for seven days by default, then mark
   jobs expired before deleting artifacts.
 - Enforce configurable file-size, media-duration, queue-timeout, and inference-concurrency limits.
+- Apply a process-local sliding-window upload rate limit; public deployments still require an
+  authenticated ingress quota.
 - Expose liveness, component-aware readiness, and generated OpenAPI documentation.
+- Recover an in-progress browser job after a page reload using its durable polling URLs.
 - Delete successfully processed source media immediately. `docker compose down --volumes`
   deliberately removes all local durable data.
 
@@ -44,12 +49,13 @@ Browser / curl → bounded API upload → media volume → PostgreSQL job
                                       │                 │
                                       └→ local Redis → independent worker
                                                          │
-                                                         ├→ PyAV validation
+                                                         ├→ PyAV 16 kHz mono chunks
+                                                         ├→ chunk checkpoints
                                                          ├→ faster-whisper
                                                          └→ PostgreSQL result
 ```
 
-Docker Compose enables asynchronous mode. The API hashes and persists media and job state before
+The API hashes and persists media and job state before
 enqueueing, returns promptly with `202`, and never loads Whisper. A worker supervisor atomically
 claims jobs and launches a fresh child process for PyAV validation, model loading, and inference.
 The supervisor can terminate that child at the configured deadline without killing the queue
@@ -57,14 +63,10 @@ consumer. PostgreSQL is authoritative for state, attempts, leases, expiry, and r
 durable handoff queue and worker-heartbeat channel; generated media keys—not client filenames—address
 files on a shared named volume.
 
-Native mode keeps the original synchronous path for focused development and real-model smoke tests.
-There the default model loads during API startup, blocking validation/inference runs off the HTTP
-event loop, and no upload or result is retained. The two modes share the same `TranscriptionService`,
-model registry, media validation, schemas, and typed errors.
-
-Shared data and adapter protocols live in `domain.py`; model caching lives in `services/models.py`;
-the use case lives in `services/transcription.py`. The review findings and remaining boundaries are
-recorded in [`docs/code-review.md`](docs/code-review.md).
+Shared data and adapter protocols live in `domain.py`; the blocking worker pipeline lives in
+`services/transcription.py`. Each isolated attempt loads only its selected model. The API never
+loads Whisper or performs media decoding. Review findings are recorded in
+[`docs/code-review.md`](docs/code-review.md).
 
 ## Run locally
 
@@ -96,10 +98,10 @@ Run the container readiness and browser-page smoke check with `make docker-smoke
 starts the stack, waits for API readiness, checks the browser page, and leaves the services running.
 `make docker-down` stops them without deleting durable data.
 
-### Native Python
+### Source development
 
-Requirements: Python 3.12, [`uv`](https://docs.astral.sh/uv/), and internet access on the first
-model run.
+Requirements: Python 3.12 and [`uv`](https://docs.astral.sh/uv/). Docker Compose remains the runtime
+because the API always requires its job store, broker, media volume, and worker.
 
 Install the locked runtime and development dependencies (or run `make setup`):
 
@@ -113,19 +115,17 @@ Optionally create local configuration:
 cp .env.example .env
 ```
 
-Run the API (or run `make run`):
-
-```bash
-uv run --frozen uvicorn transcription_service.main:app --reload
-```
+Use `make run` or `docker compose up --build` to run the complete application. Running only Uvicorn
+is intentionally unsupported because it could accept no durable work without the worker and local
+infrastructure.
 
 Open <http://localhost:8000/> for the browser interface. Choose an audio or video file, select
 Auto-detect, Hebrew, or English, choose Speech or Music mode, and select Faster or Larger model.
-The larger model may download several GB on first use and needs additional RAM. The page shows progress and
-timestamped transcript segments, with copy and `.txt` download actions. You can also use the API
+The larger model may download several GB on first use and needs additional RAM. The page shows progress,
+recovers the active job after reload, and offers copy plus JSON/TXT/SRT/VTT downloads. You can use the API
 directly at <http://localhost:8000/docs> or with the `curl` example below.
 
-The first startup downloads approximately 500 MB of model files into the Hugging Face user cache
+The first worker attempt downloads approximately 500 MB of model files into the Hugging Face user cache
 (normally `~/.cache/huggingface/hub`), which is outside this repository. Later runs reuse the cached
 model. The local `.venv/`, `.uv-cache/`, `.cache/`, `models/`, `uploads/`, `.env`, and supported
 audio/video files are excluded by `.gitignore`, so dependencies, model weights, uploaded media, and
@@ -144,6 +144,7 @@ Available endpoints:
 - Submit transcription: `POST http://localhost:8000/v1/transcriptions`
 - Job status: `GET http://localhost:8000/v1/transcriptions/{job_id}`
 - Job result: `GET http://localhost:8000/v1/transcriptions/{job_id}/result`
+- Text/subtitle export: append `?format=txt`, `?format=srt`, or `?format=vtt`
 
 Example:
 
@@ -162,7 +163,7 @@ reusing it for a different request returns `409 idempotency_conflict`. Even with
 matching SHA-256, model revision, language, audio mode, and model profile reuses active work or an
 unexpired successful result.
 
-In Docker Compose, this returns `202 Accepted`, sets `Location` to the status resource, and returns
+Every submission returns `202 Accepted`, sets `Location` to the status resource, and returns
 both polling URLs:
 
 ```json
@@ -174,11 +175,11 @@ both polling URLs:
 }
 ```
 
-Poll `status_url` until it reports `succeeded`, then fetch `result_url`. Native mode defaults to the
-original synchronous `200 OK` response:
+Poll `status_url` until it reports `succeeded`, then fetch `result_url`, which returns:
 
 ```json
 {
+  "job_id": "163df38c-bd7d-4946-b182-bcf367ffa18b",
   "text": "שלום, זאת בדיקה של שירות התמלול",
   "language": "he",
   "language_probability": 1.0,
@@ -191,9 +192,22 @@ original synchronous `200 OK` response:
       "end": 2.39,
       "text": "שלום, זאת בדיקה של שירות התמלול"
     }
-  ]
+  ],
+  "warnings": []
 }
 ```
+
+The default result representation is JSON. The same completed result can be rendered without another
+inference pass:
+
+```bash
+curl --fail --output transcript.txt "$RESULT_URL?format=txt"
+curl --fail --output transcript.srt "$RESULT_URL?format=srt"
+curl --fail --output transcript.vtt "$RESULT_URL?format=vtt"
+```
+
+An exact-silent file succeeds with empty text and `"warnings": ["no_speech_detected"]`; silence is a
+valid, explicit result rather than an infrastructure failure.
 
 ## Test and quality checks
 
@@ -211,7 +225,7 @@ uv run --frozen pytest --cov=transcription_service --cov-report=term-missing
 Run `make package` to build the distribution wheel. CI builds it as a separate check: editable
 development installs alone do not validate the files that Docker's non-editable install needs.
 
-Run an explicit real-model smoke test against one or more local samples:
+With the Compose stack running, execute a real-model smoke test against one or more local samples:
 
 ```bash
 uv run --frozen python scripts/smoke_media.py \
@@ -227,35 +241,15 @@ The equivalent Make target accepts one or more language/path samples, for exampl
 `make smoke SAMPLES="en=/path/to/english.wav he=/path/to/hebrew.m4a" AUDIO_MODE=music`.
 Add `MODEL_PROFILE=larger` to that Make command to use large-v3.
 
-The smoke test loads the configured Hugging Face model, waits for readiness, and sends every sample
-through the public HTTP endpoint. It is deliberately excluded from normal CI because it downloads
-large weights and its execution time depends on the available hardware.
+The smoke test waits for the running job service, submits each sample, polls its durable status, and
+fetches the completed result. It is excluded from normal CI because it downloads large weights and
+its execution time depends on the available hardware. Previous Compose verification covered real
+inference, restart persistence, idempotency and hash reuse, hard deadlines, readiness expiry, and
+two workers competing safely for one job.
 
-Phase 5 verification on 1 November 2026 passed Ruff, mypy, all 63 fast tests with 95% coverage,
-wheel packaging, and real-model smoke tests for generated English, Hebrew, mixed-language, and
-MP4-with-audio samples. Corrupt allowed media returned the sanitized `415 unsupported_media`
-contract. The documented `make smoke` command was also exercised successfully. Docker Desktop on
-Apple Silicon built the ARM64 image from scratch and ran the Compose-configured service. Its first
-startup populated a 464 MB named model-cache volume and completed real inference; a restart using
-the same volume initialized the model in under one second without downloading the weights again.
-Readiness, the browser UI, OpenAPI, non-root execution, read-only root filesystem, bounded tmpfs,
-dropped capabilities, and `no-new-privileges` were verified. Port `8002` was used for this check
-because the project's native development server was already using the documented port `8000`.
-
-Phase 6 verification on 1 November 2026 passed Ruff, mypy, all 68 fast tests, wheel packaging, and
-the complete four-service Compose flow. A generated English M4A received `202`, moved through
-`queued` to `succeeded`, and produced a real faster-whisper result. Restarting both API and worker
-preserved and returned the same PostgreSQL-backed result. Redis and PostgreSQL health checks passed,
-the API did not load a model, and the worker reused the existing model-cache volume. Port `8002` was
-again used only to avoid the already-running native development server.
-
-Phase 7 verification on 1 November 2026 passed Ruff, mypy, all 80 fast tests, wheel packaging, and
-the migrated four-service Compose stack. A real isolated child completed English inference; the
-same request with an idempotency key and with hash-only deduplication reused its result without a
-second attempt; changed media with the same key returned `409`. A forced 0.2-second deadline made
-two attempts and ended with stable `job_timeout` state. Stopping the worker changed readiness to
-`503` after its heartbeat expired. With two worker supervisors, a real job completed with exactly
-one atomic claim and one attempt. Existing Phase 6 data survived the schema migration.
+Phase 8 passes Ruff formatting/lint, strict mypy, JavaScript syntax checking, 70 tests with 82%
+coverage, and wheel packaging. Docker Desktop rebuilt the image and the API, worker, PostgreSQL,
+and Redis reached readiness on port 8002.
 
 ## Configuration
 
@@ -265,17 +259,18 @@ All settings use the `TRANSCRIPTION_` environment prefix. Defaults are listed in
 | --- | --- | --- |
 | `TRANSCRIPTION_MODEL_ID` | `Systran/faster-whisper-small` | Hugging Face CTranslate2 model |
 | `TRANSCRIPTION_MODEL_REVISION` | `536b066...` | Reproducible Hugging Face model commit |
-| `TRANSCRIPTION_LARGER_MODEL_ID` | `Systran/faster-whisper-large-v3` | Optional larger model, loaded on demand |
+| `TRANSCRIPTION_LARGER_MODEL_ID` | `Systran/faster-whisper-large-v3` | Optional larger model selected per attempt |
 | `TRANSCRIPTION_LARGER_MODEL_REVISION` | `edaa852...` | Pinned large-v3 model commit |
 | `TRANSCRIPTION_DEVICE` | `cpu` | CTranslate2 device: `cpu`, `cuda`, or `auto` |
 | `TRANSCRIPTION_COMPUTE_TYPE` | `int8` | CPU-friendly quantized inference |
 | `TRANSCRIPTION_BEAM_SIZE` | `5` | Beam-search quality/speed trade-off |
 | `TRANSCRIPTION_MAX_UPLOAD_BYTES` | `104857600` | 100 MiB file-size limit |
 | `TRANSCRIPTION_MAX_CONCURRENT_UPLOADS` | `2` | Admitted upload requests, including parsing, queueing, and processing |
-| `TRANSCRIPTION_MAX_MEDIA_DURATION_SECONDS` | `900` | 15-minute synchronous limit |
-| `TRANSCRIPTION_MAX_CONCURRENT_TRANSCRIPTIONS` | `1` | Shared decoding, model loading, and inference slots per process |
-| `TRANSCRIPTION_INFERENCE_QUEUE_TIMEOUT_SECONDS` | `5` | Wait before returning `model_busy` |
-| `TRANSCRIPTION_ASYNC_JOBS_ENABLED` | `false` | Enable durable job submission; Compose sets this to `true` |
+| `TRANSCRIPTION_MAX_MEDIA_DURATION_SECONDS` | `900` | 15-minute worker-side media limit |
+| `TRANSCRIPTION_CHUNK_DURATION_SECONDS` | `300` | Normalized WAV chunk length used for resumable inference |
+| `TRANSCRIPTION_CHUNK_MAX_ATTEMPTS` | `2` | Attempts for one chunk inside a job attempt |
+| `TRANSCRIPTION_RATE_LIMIT_REQUESTS` | `10` | Upload submissions allowed per client/window/API process |
+| `TRANSCRIPTION_RATE_LIMIT_WINDOW_SECONDS` | `60` | Sliding upload-rate window in seconds |
 | `TRANSCRIPTION_DATABASE_URL` | Compose PostgreSQL URL | Authoritative job and result store |
 | `TRANSCRIPTION_REDIS_URL` | Compose Redis URL | Durable job broker |
 | `TRANSCRIPTION_REDIS_QUEUE_NAME` | `transcription:jobs` | Redis queue key |
@@ -352,7 +347,7 @@ The model defaults to Hugging Face revision
 to change without a code or lockfile change, making failures and output differences harder to
 reproduce.
 
-### Explicit larger-model option with lazy loading
+### Explicit per-attempt model selection
 
 The browser and API expose the allowlisted profiles `faster` and `larger`. Existing requests default
 to `faster`, preserving the CPU-friendly small model. `larger` selects `Systran/faster-whisper-large-v3`
@@ -360,39 +355,17 @@ at revision `edaa852ec7e145841d8ffdb056a99866b5f0a478`. Clients cannot supply ar
 revisions; operators configure those through environment variables. Both profiles remain independent
 of `audio_mode`, and responses identify the model actually used.
 
-In native synchronous mode, the default model stays in memory. The larger model is downloaded/loaded
-on its first selected request, in a worker thread, and then cached until process shutdown. A lock prevents
-duplicate concurrent initialization. Loading and inference share the existing semaphore and queue
-timeout, so first-use loading occupies an inference slot. At most two model instances are retained
-per process; memory use increases after selecting the larger option. Both use the same disk cache,
-device, compute type, and beam-size settings. `processing_time_seconds` includes any first-use
-download/loading time. Model initialization failures return a sanitized error without silently
-substituting the small model; later requests can retry, and the default model remains usable.
-
-This trades higher RAM use after first selection for fast repeated use and preserves quick startup.
-Evicting models on every selection would reduce resident memory but cause repeated loading and
-model-switch races. Revisit the cache policy for memory-constrained deployments or a larger model
-catalog; separate inference workers are preferable at that scale.
-
-In asynchronous mode, the same registry and profile rules run inside each isolated attempt process.
-Disk weights remain cached, but process-local model instances are released after each attempt. This
-is intentionally slower than a permanent model process in exchange for enforceable deadlines and
-clean memory reclamation.
+The child-process entry point selects and loads exactly one configured model for its job. Disk
+weights remain cached, but the model instance is released when the attempt exits. This is
+intentionally slower than a permanent model process in exchange for enforceable deadlines, clean
+memory reclamation, and keeping inference outside the HTTP process.
 
 The UI deliberately says “Larger model”, not “Higher accuracy”. On the same 10.3-second Hebrew song
 clip, small took 15.2 seconds and produced garbled words; large-v3 took 21.5 seconds and returned
 only “תודה רבה.” with an implausible timestamp. These are one-clip observations, not a benchmark or
 quality guarantee. Singing remains best-effort, and the larger option is retained for user comparison.
 
-### PostgreSQL only for the durable deployment
-
-The requested workflow is upload → transcribe → return. There are no accounts, history, sharing,
-audit, billing, or retention requirements. Adding PostgreSQL would introduce migrations,
-transactions, cleanup rules, privacy obligations, and authorization questions without supporting a
-current requirement.
-
-That original synchronous mode remains intentionally stateless: uploaded media is closed after the
-request, and neither media nor transcript is retained.
+### PostgreSQL for durable job state
 
 Durable asynchronous jobs now justify PostgreSQL. Compose stores job state and JSON results there,
 while Redis handles queue delivery and a generated-key media volume bridges API and worker. These
@@ -433,16 +406,16 @@ returns `409` when it does not; otherwise an active or successful unexpired job 
 model revision, language, audio mode, and model profile is reused. Failed and expired results are not
 cache hits.
 
-Successful source media is deleted immediately and its JSON result expires after seven days by
-default. Terminal-failure media is retained for 24 hours for local diagnosis. Cleanup first changes
+Successful source media and its chunk checkpoint are deleted immediately; its result expires after
+seven days by default. Terminal-failure media is retained for 24 hours for local diagnosis. Cleanup first changes
 the authoritative row to `expired` and clears its result, then removes any media artifact. Job
 tombstones and idempotency keys remain so clients receive stable status; eventual tombstone deletion
 requires a separate product policy.
 
-### Synchronous, bounded requests
+### Bounded asynchronous submissions
 
-The first product returns the transcription in the upload response because that directly matches
-the assignment. File size, media duration, model concurrency, and queue wait are bounded to prevent
+The API persists the upload and returns a job resource rather than keeping HTTP open during model
+execution. File size, media duration, pending jobs, and worker execution are bounded to prevent
 uncontrolled resource consumption.
 
 Transport limits apply before dependencies or inference: at most two upload requests are admitted
@@ -452,6 +425,14 @@ Starlette parses at most one file and three form fields of up to 4 KiB each. The
 limit is also checked after parsing. Parser errors and early rejections close partial uploads.
 If increasing file size or admission concurrency, also increase Compose's 256 MiB temporary
 filesystem appropriately. These limits are per process, not shared across replicas.
+
+The API also admits ten upload submissions per client address per 60-second sliding window by
+default and returns `429 rate_limit_exceeded` with `Retry-After` when exceeded. This limiter is
+process-local and intentionally reads the socket client address rather than trusting a caller's
+`X-Forwarded-For` header. For public deployment, terminate traffic at a trusted reverse proxy that
+normalizes forwarding headers and enforces shared per-API-key or per-account quotas. Add API-key or
+user authentication before relying on an identity-based limit; the local limiter is defense in
+depth, not a multi-replica quota system.
 
 For Compose deployments, the implemented local architecture is:
 
@@ -471,11 +452,6 @@ An in-process background task remains rejected because a process restart would l
 
 ### Explicit inference capacity and process isolation
 
-Native synchronous mode keeps one pipeline slot by default. Admitted requests wait up to the
-configured queue timeout and then receive `503 model_busy` plus `Retry-After`. Media validation,
-lazy loading, and inference all occupy that slot in a worker thread. A cancelled caller retains its
-stream and slot until the native work finishes because Python cannot safely kill that thread.
-
 Compose uses one worker supervisor by default. It atomically claims one job, then starts a child
 process for the complete native pipeline. The supervisor renews both its job lease and readiness
 heartbeat while waiting. At the deadline it terminates the child, records `job_timeout`, and retries
@@ -492,17 +468,18 @@ the authoritative container and audio-stream validation. Client-provided filenam
 as server filesystem paths.
 
 Audio and video intentionally use the same endpoint and transcription pipeline. For MP4, MOV,
-WebM, and MKV, PyAV selects the first audio stream; the video frames are not decoded or copied into
-a separate temporary file. A readable video without audio returns the typed `no_audio_stream`
+WebM, and MKV, PyAV selects the first audio stream; the video frames are not decoded. It resamples
+decoded frames to signed 16-bit, 16 kHz mono PCM and writes bounded in-memory WAV chunks. A readable
+video without audio returns the typed `no_audio_stream`
 client error. Selecting among multiple audio tracks is deferred until a product requirement defines
 the desired user experience and API contract.
 
-Duration headers are an early check, not a resource guarantee. PyAV also decodes the first audio
-stream incrementally and counts samples, stopping at the configured limit even when duration
-metadata is missing or under-reported. Faster-whisper decodes that validated input again for its
-own preprocessing. This extra decode is an intentional CPU trade-off that bounds input before the
-model allocates its full audio array, without duplicating faster-whisper's preprocessing logic.
-Segment timestamps are clipped to the decoded recording duration and empty/out-of-range spans are
+PyAV decodes the first audio stream incrementally and counts normalized samples, stopping at the
+configured limit even when duration metadata is missing or under-reported. Each chunk result is
+checkpointed atomically beside the generated media key. A retry skips completed chunks, retries the
+failed chunk, and offsets its segment timestamps during ordered assembly. The whole normalized PCM
+buffer is currently held in worker memory; an external chunk/object pipeline is the next step for
+multi-hour recordings. Segment timestamps are clipped to decoded duration and empty spans are
 discarded. This fixes impossible timelines; it does not correct hallucinated words.
 
 ### Speech and music modes instead of a VAD flag
@@ -539,31 +516,35 @@ Every handled failure uses a stable envelope:
 }
 ```
 
-Expected status codes include:
+Submission and result HTTP status codes include:
 
 | Status | Meaning |
 | --- | --- |
 | `400` | Empty or malformed request |
 | `409` | Idempotency key conflict or result requested before completion |
-| `413` | Upload or media duration exceeds configured limits |
-| `415` | Unsupported or undecodable media |
-| `422` | Invalid language/audio mode or missing audio stream |
-| `500` | Sanitized model/inference failure |
-| `503` | Model/job infrastructure unavailable, worker heartbeat absent, or admission full |
+| `413` | Upload exceeds the configured byte limit |
+| `422` | Invalid request option or missing upload |
+| `429` | Local upload-rate window exceeded |
+| `503` | Job infrastructure unavailable, worker heartbeat absent, or admission full |
 | `507` | Configured local media-storage budget exhausted |
 
-Internal exception text, stack traces, and local paths are logged server-side and are not returned
-to clients. Every response includes `X-Request-ID` for correlation.
+Media decoding, duration, language support, and inference errors happen after acceptance. They are
+stored as stable `error_code` and `error_message` values on the failed job instead of being returned
+from the upload request. Internal exception text, stack traces, and local paths are logged
+server-side and are not returned to clients. Every response includes `X-Request-ID` for correlation.
 
 ### Same-origin, buildless browser interface
 
 The upload experience is a single HTML page with local CSS and JavaScript served by FastAPI. It
 submits to the existing API and follows a `202` response by polling job status and fetching the
-result. Native synchronous responses remain supported. There is no separate frontend server,
-framework, bundler, or extra runtime dependency. Static assets are packaged with the Python wheel,
-and the page does not load fonts, scripts, or styles from third-party CDNs.
+result. There is no separate frontend server, framework, bundler, or extra runtime dependency.
+Static assets are packaged with the Python wheel, and the page does not load fonts, scripts, or
+styles from third-party CDNs.
 The page obtains the transcription URL and upload limit from `/client-config`, so a configured API
-prefix works without changing JavaScript. Server-side validation remains authoritative.
+prefix works without changing JavaScript. It stores only the active job's polling URLs and display
+filename in browser local storage, resumes polling after reload, and clears that record at a terminal
+state. Completed downloads are rendered by the API rather than reconstructed in JavaScript.
+Server-side validation remains authoritative.
 
 This intentionally small interface is appropriate for the assignment's submit-and-poll workflow. A
 larger product with navigation, authentication, job history, or multiple frontend teams
@@ -601,7 +582,7 @@ rule was removed and CI now also runs `make package`.
 
 ## Implementation roadmap
 
-Phases 1 and 2 below are implemented as repository Phases 6 and 7. Phase 3 remains ordered work.
+Phases 1–3 below are implemented as repository Phases 6–8.
 The goal is to meet the backend-interview requirements while keeping the complete development and
 review environment local and reproducible with one Docker Compose command.
 
@@ -633,7 +614,7 @@ review environment local and reproducible with one Docker Compose command.
 - Make job claiming atomic, recover jobs abandoned by a crashed worker, and expose queue/worker
   readiness without requiring the model to run during a health probe.
 
-### Phase 3 — Close the remaining interview-scope gaps
+### Phase 3 — Close the remaining interview-scope gaps (implemented)
 
 - Add an explicit media-normalization adapter that produces and tests 16 kHz mono audio before
   inference instead of relying only on faster-whisper's internal preprocessing.
@@ -644,6 +625,7 @@ review environment local and reproducible with one Docker Compose command.
   a public deployment.
 - Add application-level chunking for long recordings only after the durable job pipeline works, so
   chunks can be retried and assembled without keeping an HTTP request open.
+- Recover active browser polling after reload and expose every result format through the UI.
 
 Deferred beyond these phases: diarization, translation, LLM summaries, transcript editing, billing,
 PII redaction, URL ingestion, completion webhooks, managed object storage, Kubernetes, and Prometheus
@@ -656,8 +638,8 @@ metrics. These remain useful scaling or product discussions, not prerequisites f
   tombstone deletion separately.
 - Only the first audio stream in a video container is transcribed; the API does not yet expose audio
   track selection.
-- There is no authentication or rate limiting. Do not expose this service directly to an untrusted
-  public network in its current form.
+- The implemented rate limit is process-local and address-based. Public use still requires trusted
+  proxy handling plus authenticated, deployment-wide quotas.
 - Hash caching is deployment-wide because there are no users yet. If authentication is added, include
   tenant/authorization scope in both the idempotency uniqueness rule and cache identity.
 - Automatic language detection and Hebrew/English code-switching are model-dependent and may be
@@ -665,9 +647,8 @@ metrics. These remain useful scaling or product discussions, not prerequisites f
 - Music mode processes the full audio track and is therefore slower than speech mode.
 - Docker uses CPU inference and one supervisor by default. A production GPU or multi-replica deployment needs
   deployment-specific resource allocation, scaling, and model-cache warming.
-- Native synchronous decoding/inference still has no hard execution deadline; hard subprocess
-  termination applies to asynchronous Compose jobs. Public deployment also needs ingress timeouts,
-  authentication, authorization, and request-rate limits.
+- Public deployment still needs ingress timeouts, authentication, authorization, and request-rate
+  limits around the durable job API.
 
 ## Updating this decision record
 

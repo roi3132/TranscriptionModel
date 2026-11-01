@@ -553,7 +553,11 @@ class LocalMediaStore:
         return self._root / key
 
     def delete(self, key: str) -> None:
-        self.path_for(key).unlink(missing_ok=True)
+        media_path = self.path_for(key)
+        media_path.unlink(missing_ok=True)
+        checkpoint = media_path.with_suffix(".chunks.json")
+        checkpoint.unlink(missing_ok=True)
+        checkpoint.with_suffix(f"{checkpoint.suffix}.tmp").unlink(missing_ok=True)
 
     def _stored_bytes(self) -> int:
         return sum(

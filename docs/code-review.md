@@ -1,21 +1,20 @@
 # Code and architecture review
 
-The service now has two deliberate deployment modes: a synchronous, stateless native development
-mode and a durable asynchronous Docker Compose mode. Python, PyAV, faster-whisper, pinned Hugging
-Face revisions, and the two model profiles remain appropriate. PostgreSQL is now justified for job
-state/results, Redis for durable handoff, and a local named volume for queued media.
+The service now has one durable asynchronous contract. FastAPI accepts and persists uploads but
+never loads Whisper or blocks HTTP on inference. An independent worker owns PyAV, faster-whisper,
+and the two pinned model profiles. PostgreSQL stores job state/results, Redis provides durable
+handoff, and a local named volume stores queued media.
 
 ## Roadmap status
 
-The interview scope expanded after the synchronous review. Phases 6 and 7 are implemented and
-verified; Phase 8 remains ordered work in `docs/architecture-plan.html` and the README:
+Phases 6, 7, and 8 are implemented and verified in `docs/architecture-plan.html` and the README:
 
 1. **Implemented:** run the API, Redis broker, PostgreSQL job store, media volume, and independent
    inference worker locally; return `202` and expose job status and result endpoints.
 2. **Implemented:** retries, hard child-process deadlines, idempotency/hash deduplication, leased
    crash recovery, retention, cleanup, and component-specific readiness.
-3. **Next:** add explicit 16 kHz mono normalization, defined silent-input behavior, TXT/SRT/VTT exports, rate
-   limiting, long-file chunking, and asynchronous UI polling.
+3. **Implemented:** explicit 16 kHz mono normalization, defined silent-input behavior, TXT/SRT/VTT
+   exports, process-local rate limiting, resumable chunking, and browser reload recovery.
 
 Managed cloud services are not required. Redis and PostgreSQL are self-hosted containers, and the
 first `MediaStore` implementation uses a named local volume. S3-compatible storage and multi-host
@@ -26,10 +25,9 @@ scaling remain later deployment options.
 | Priority | Finding | Resolution and regression evidence |
 | --- | --- | --- |
 | High | File-size validation ran only after multipart parsing had already buffered/spooled the whole body. | `api/uploads.py` bounds declared and streamed bytes before model dependencies, restricts multipart shape, and uses Starlette's parser cleanup. Chunked-upload tests verify partial files close and unread body data is not consumed. |
-| High | Inference concurrency did not bound simultaneous upload storage or media inspection. | A separate admission limit covers the complete upload request; the inference slot now covers media decoding, loading, and inference. A stalled-stream test verifies excess requests are rejected before reading their bodies. |
+| High | Inference concurrency did not bound simultaneous upload storage. | A separate API admission limit bounds upload parsing and persistence; each supervisor runs one isolated attempt. A stalled-stream test verifies excess uploads are rejected before reading their bodies. |
 | High | Standard wheel builds failed because the UI assets were included twice; editable installs hid the failure. | Removed duplicate Hatch `force-include`, built and inspected the wheel, and added `make package` to CI. |
-| High | Cancelling an asyncio request could release its inference slot and close the uploaded file while its native worker continued. | Shield the worker and defer cancellation cleanup until it finishes. A regression cancels twice and checks both capacity and file ownership. |
-| Medium | Missing or understated duration headers could permit oversized decoding before a post-inference check. | PyAV counts decoded audio samples incrementally and stops at the limit, inside the capacity slot. Tests cover missing and wrong duration metadata. |
+| Medium | Missing or understated duration headers could permit oversized decoding before a post-inference check. | PyAV counts decoded audio samples incrementally in the worker child and stops at the limit. Tests cover missing and wrong duration metadata. |
 | Medium | The larger-model request was initially validated against the small model's language list. | Validate once against the selected model; a regression uses models with different supported languages. |
 | Medium | The browser hardcoded `/v1` despite exposing a configurable API prefix. | `/client-config` supplies the public endpoint and file limit; the integration test uploads through a custom prefix. |
 | Medium | Unexpected errors could omit `X-Request-ID`, and HTTP exception handling dropped headers such as `Allow`. | Error responses always include the correlation ID and preserve HTTP headers; regressions cover unhandled errors and HTTP 405. |
@@ -39,8 +37,8 @@ scaling remain later deployment options.
 
 - `domain.py` contains shared data and adapter protocols. Adapters no longer import the use-case
   implementation just to access a dataclass or enum.
-- `services/models.py` owns the bounded, thread-safe model cache. `TranscriptionService` owns the
-  pipeline and capacity policy.
+- `TranscriptionService` is a blocking child-process pipeline. The attempt entry point selects one
+  configured model before constructing it; there is no second in-process queue or model registry.
 - `services/jobs.py` owns submission identity and lifecycle policy; `services/execution.py` owns
   inline and isolated attempt strategies. PostgreSQL and Redis details remain in `adapters/jobs.py`.
 - The worker is a supervisor. Native decoding/model work occurs in a disposable child, while the
@@ -50,33 +48,35 @@ scaling remain later deployment options.
 - Standard Starlette multipart parsing, AnyIO capacity limiting, PyAV decoding, and Hatch packaging
   remain responsible for their existing jobs; no parser, audio feature extractor, or build system
   was reimplemented.
-- README startup claims now match both lifecycles: native readiness follows eager model loading;
-  asynchronous readiness checks database, broker, and a renewable worker heartbeat without inference.
+- README startup claims now match the single lifecycle: readiness checks database, broker, and a
+  renewable worker heartbeat without invoking inference.
 
 ## Boundaries retained deliberately
 
-- Native mode still shares codecs/model execution with the API process and therefore has no hard
-  deadline. Compose isolates each attempt in a terminable subprocess; this is a process boundary,
-  not a complete hostile-input OS sandbox with per-job seccomp/cgroup limits.
-- Native admission/inference limits remain per process. Asynchronous pending-job admission is
-  serialized in PostgreSQL and therefore deployment-wide; each supervisor runs one child at a time.
-  Keep one Uvicorn API process locally and scale supervisors explicitly.
-- Two model instances may remain resident in native mode after the larger option is first used.
-  Asynchronous attempts instead reload process-local model state each time, trading latency for hard
-  cancellation and memory reclamation.
-- Duration validation intentionally decodes audio before faster-whisper decodes it again. This
-  costs CPU, but rejects overlong inputs before the model's full-array preprocessing and avoids
-  duplicating its resampling/feature-extraction implementation.
-- No authentication, user-owned history, reverse-proxy deployment, or accuracy guarantee for
-  singing was added. Public ingress needs authentication, rate limits, and upload/idle timeouts.
+- Compose isolates each attempt in a terminable subprocess; this is a process boundary, not a
+  complete hostile-input OS sandbox with per-job seccomp/cgroup limits.
+- Pending-job admission is serialized in PostgreSQL and therefore deployment-wide; each supervisor
+  runs one child at a time. Scale supervisors explicitly according to available CPU/GPU memory.
+- Attempts reload process-local model state each time, trading latency for hard cancellation and
+  memory reclamation while reusing the shared on-disk model cache.
+- Normalization currently buffers at most the configured 15-minute PCM stream before creating
+  in-memory WAV chunks. Multi-hour input should move chunk materialization behind durable object
+  storage instead of raising the current limits blindly.
+- The upload limiter is process-local and socket-address based. No authentication, user-owned
+  history, reverse-proxy deployment, or accuracy guarantee for singing was added. Public ingress
+  still needs trusted forwarding, authenticated shared quotas, and upload/idle timeouts.
 - Docker Desktop on Apple Silicon built and ran the ARM64 image successfully. The Compose-configured
   container completed real inference and the named model volume survived container replacement.
 
 ## Verification
 
 Run `make check test package` for formatting, lint, typing, fast regression tests, and wheel build.
-Use the README's explicit real-model smoke commands for native inference, and `make docker-smoke`
-when Docker is available. Fast CI must continue to avoid downloading model weights.
+Use the README's explicit real-model smoke command against the Compose stack, and `make docker-smoke`
+for the basic container check. Fast CI must continue to avoid downloading model weights.
+
+Phase 8 passes Ruff formatting/lint, strict mypy, JavaScript syntax checking, 70 focused tests with
+82% coverage, wheel packaging, and a fresh Docker image build. The rebuilt four-service stack
+reached API readiness on port 8002.
 
 Phase 5 verification on 1 November 2026 produced the following evidence:
 
@@ -89,10 +89,10 @@ Phase 5 verification on 1 November 2026 produced the following evidence:
   timing, model identifiers, error codes, and request IDs—not filenames or transcript text.
 - The README's documented `make smoke SAMPLES=...` path completed successfully.
 - Docker Desktop built the image from scratch and populated a 464 MB named model-cache volume on the
-  first startup. The replacement container reached model readiness in under one second using the
+  first startup. The replacement container loaded the cached model in under one second using the
   same volume and completed real inference. Container inspection confirmed UID/GID 10001,
   read-only root filesystem, a 256 MiB `noexec,nosuid` tmpfs, all capabilities dropped, and
-  `no-new-privileges`. Port 8002 was used because the native development server occupied port 8000.
+  `no-new-privileges`. Port 8002 was used because another local process occupied port 8000.
 - Phase 6 added 68 passing fast tests and the locked Redis/psycopg clients. The four-service Compose
   stack accepted a generated M4A with `202`, completed real inference, returned the persisted result,
   and returned that same result after both API and worker restarted. PostgreSQL, Redis, media, and
@@ -103,3 +103,8 @@ Phase 5 verification on 1 November 2026 produced the following evidence:
   migrated in place. Real Compose checks proved cache reuse and conflict behavior, a two-attempt
   `job_timeout` under a forced 0.2-second deadline, readiness failure after worker heartbeat expiry,
   and exactly one attempt while two supervisors competed for a real job.
+- Phase 8 focuses the suite at 70 tests after removing synchronous-only concurrency tests. New
+  coverage proves 16 kHz mono output, explicit silent results, per-chunk retry and checkpoint resume,
+  ordered timestamp assembly, process-local rate admission, every export representation, and browser
+  recovery hooks. The wheel and rebuilt Compose stack passed, with all four services ready on port
+  8002.

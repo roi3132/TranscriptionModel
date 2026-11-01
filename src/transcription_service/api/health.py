@@ -5,7 +5,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request
 
-from transcription_service.core.errors import ModelNotReadyError
+from transcription_service.core.errors import JobServiceNotReadyError
 from transcription_service.core.status import RuntimeStatus
 from transcription_service.schemas.common import ErrorResponse, HealthResponse
 from transcription_service.services.jobs import JobSubmissionService
@@ -40,11 +40,10 @@ async def readiness(
     request: Request,
     status: RuntimeStatusDependency,
 ) -> HealthResponse:
-    """Report whether a transcription model can accept work."""
+    """Report whether durable job infrastructure can accept work."""
 
     if not status.model_ready:
-        raise ModelNotReadyError
-    job_service: JobSubmissionService | None = request.app.state.job_service
-    if job_service is not None:
-        await job_service.check_ready()
+        raise JobServiceNotReadyError
+    job_service: JobSubmissionService = request.app.state.job_service
+    await job_service.check_ready()
     return HealthResponse(status="ready")

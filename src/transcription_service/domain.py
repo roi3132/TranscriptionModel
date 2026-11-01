@@ -1,11 +1,8 @@
 """Shared transcription data and blocking adapter contracts."""
 
-from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import BinaryIO, Protocol
-
-from transcription_service.core.config import Settings
 
 
 class AudioMode(StrEnum):
@@ -19,9 +16,17 @@ class ModelProfile(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
-class MediaMetadata:
-    duration_seconds: float | None
-    format_name: str
+class NormalizedChunk:
+    index: int
+    start_seconds: float
+    media: BinaryIO
+
+
+@dataclass(frozen=True, slots=True)
+class NormalizedMedia:
+    chunks: tuple[NormalizedChunk, ...]
+    duration_seconds: float
+    is_silent: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,6 +50,7 @@ class CompletedTranscription:
     result: TranscriptionResult
     processing_time_seconds: float
     model_id: str
+    warnings: tuple[str, ...] = ()
 
 
 class Transcriber(Protocol):
@@ -59,10 +65,7 @@ class Transcriber(Protocol):
     ) -> TranscriptionResult: ...
 
 
-class MediaInspector(Protocol):
-    def inspect(
+class MediaNormalizer(Protocol):
+    def normalize(
         self, media: BinaryIO, *, filename: str | None, content_type: str | None
-    ) -> MediaMetadata: ...
-
-
-TranscriberFactory = Callable[[Settings], Transcriber]
+    ) -> NormalizedMedia: ...

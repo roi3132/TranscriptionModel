@@ -20,7 +20,7 @@ class TranscriptionSegment(BaseModel):
 
 
 class TranscriptionResponse(BaseModel):
-    """Completed synchronous transcription."""
+    """Completed transcription returned by a job result endpoint."""
 
     model_config = ConfigDict(str_strip_whitespace=True)
 
@@ -31,3 +31,4 @@ class TranscriptionResponse(BaseModel):
     processing_time_seconds: float = Field(ge=0)
     model: str = Field(min_length=1)
     segments: list[TranscriptionSegment]
+    warnings: list[str] = Field(default_factory=list)

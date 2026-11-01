@@ -13,7 +13,6 @@ def test_settings_have_cpu_safe_defaults() -> None:
     assert settings.model_revision == "536b0662742c02347bc0e980a01041f333bce120"
     assert settings.device == "cpu"
     assert settings.compute_type == "int8"
-    assert settings.max_concurrent_transcriptions == 1
     assert settings.max_media_duration_seconds == 900
 
 
