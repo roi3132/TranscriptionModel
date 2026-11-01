@@ -1,0 +1,730 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Architecture and implementation handoff for the TranscriptionModel take-home assignment.">
+  <title>Transcription Service — Architecture and Implementation Plan</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --page: #f6f7fb;
+      --surface: #ffffff;
+      --surface-soft: #f0f3f8;
+      --text: #172033;
+      --muted: #5d687a;
+      --border: #dce2eb;
+      --accent: #3157d5;
+      --accent-soft: #e9eeff;
+      --success: #147a55;
+      --success-soft: #e5f6ee;
+      --warning: #9a5a00;
+      --warning-soft: #fff2d6;
+      --danger: #b42318;
+      --code: #101827;
+      --code-text: #e7edf8;
+      --shadow: 0 12px 32px rgba(30, 42, 70, 0.08);
+      --radius: 16px;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --page: #0f1420;
+        --surface: #171e2d;
+        --surface-soft: #20293a;
+        --text: #edf2fb;
+        --muted: #abb7ca;
+        --border: #334057;
+        --accent: #91a8ff;
+        --accent-soft: #26345f;
+        --success: #69d5ac;
+        --success-soft: #153b31;
+        --warning: #ffc96a;
+        --warning-soft: #473719;
+        --danger: #ff8d85;
+        --code: #090d14;
+        --code-text: #e7edf8;
+        --shadow: none;
+      }
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: var(--page);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.55;
+    }
+    a { color: var(--accent); }
+    code, pre { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; }
+    code {
+      padding: 0.12rem 0.36rem;
+      border-radius: 5px;
+      background: var(--surface-soft);
+      font-size: 0.92em;
+    }
+    pre {
+      overflow-x: auto;
+      margin: 0.8rem 0 0;
+      padding: 1rem;
+      border-radius: 12px;
+      background: var(--code);
+      color: var(--code-text);
+      font-size: 0.88rem;
+      line-height: 1.55;
+    }
+    pre code { padding: 0; background: transparent; color: inherit; }
+    h1, h2, h3 { line-height: 1.2; }
+    h1 { margin: 0.35rem 0 0.75rem; font-size: clamp(2rem, 6vw, 3.8rem); letter-spacing: -0.045em; }
+    h2 { margin: 0 0 1rem; font-size: 1.55rem; letter-spacing: -0.02em; }
+    h3 { margin: 0 0 0.65rem; font-size: 1.05rem; }
+    p { margin: 0.55rem 0; }
+    ul, ol { margin: 0.55rem 0; padding-left: 1.35rem; }
+    li + li { margin-top: 0.32rem; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 0.72rem 0.75rem; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
+    th { color: var(--muted); font-size: 0.8rem; letter-spacing: 0.045em; text-transform: uppercase; }
+    .page { width: min(1180px, calc(100% - 32px)); margin: 0 auto; padding-bottom: 72px; }
+    .hero { padding: 64px 0 34px; }
+    .eyebrow { color: var(--accent); font-size: 0.8rem; font-weight: 700; letter-spacing: 0.09em; text-transform: uppercase; }
+    .lede { max-width: 760px; color: var(--muted); font-size: 1.08rem; }
+    .meta { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 1.35rem; }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      padding: 0.36rem 0.65rem;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: var(--surface);
+      color: var(--muted);
+      font-size: 0.82rem;
+    }
+    .pill strong { color: var(--text); }
+    .layout { display: grid; grid-template-columns: 230px minmax(0, 1fr); gap: 28px; align-items: start; }
+    .toc {
+      position: sticky;
+      top: 20px;
+      padding: 1rem;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--surface);
+      box-shadow: var(--shadow);
+    }
+    .toc strong { display: block; margin-bottom: 0.55rem; font-size: 0.82rem; letter-spacing: 0.04em; text-transform: uppercase; }
+    .toc a { display: block; padding: 0.35rem 0; color: var(--muted); text-decoration: none; font-size: 0.88rem; }
+    .toc a:hover { color: var(--accent); }
+    main { min-width: 0; }
+    section {
+      margin-bottom: 24px;
+      padding: clamp(1.15rem, 3vw, 1.7rem);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--surface);
+      box-shadow: var(--shadow);
+      scroll-margin-top: 20px;
+    }
+    .section-intro { max-width: 780px; color: var(--muted); }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin-top: 1rem; }
+    .grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .decision, .note {
+      padding: 1rem;
+      border-radius: 12px;
+      background: var(--surface-soft);
+    }
+    .decision .label { color: var(--muted); font-size: 0.76rem; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; }
+    .decision .value { margin-top: 0.25rem; font-weight: 700; }
+    .decision .reason { margin-top: 0.35rem; color: var(--muted); font-size: 0.9rem; }
+    .callout {
+      margin-top: 1rem;
+      padding: 0.9rem 1rem;
+      border-left: 4px solid var(--accent);
+      border-radius: 8px;
+      background: var(--accent-soft);
+    }
+    .callout.warning { border-left-color: var(--warning); background: var(--warning-soft); }
+    .callout.success { border-left-color: var(--success); background: var(--success-soft); }
+    .architecture {
+      display: grid;
+      grid-template-columns: repeat(7, auto);
+      gap: 10px;
+      align-items: center;
+      justify-content: space-between;
+      margin: 1.35rem 0;
+      padding: 1.1rem;
+      border-radius: 14px;
+      background: var(--surface-soft);
+    }
+    .node {
+      min-width: 112px;
+      padding: 0.85rem 0.7rem;
+      border: 1px solid var(--border);
+      border-radius: 11px;
+      background: var(--surface);
+      text-align: center;
+    }
+    .node strong { display: block; font-size: 0.9rem; }
+    .node span { display: block; margin-top: 0.2rem; color: var(--muted); font-size: 0.75rem; }
+    .arrow { color: var(--muted); font-size: 1.25rem; text-align: center; }
+    .branch {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 0.85rem;
+    }
+    .branch .node { min-width: 0; }
+    .branch .future { border-style: dashed; }
+    .phase {
+      display: grid;
+      grid-template-columns: 52px minmax(0, 1fr);
+      gap: 16px;
+      padding: 1.15rem 0;
+      border-top: 1px solid var(--border);
+    }
+    .phase:first-of-type { margin-top: 0.5rem; border-top: 0; }
+    .phase-number {
+      display: grid;
+      place-items: center;
+      width: 42px;
+      height: 42px;
+      border-radius: 12px;
+      background: var(--accent-soft);
+      color: var(--accent);
+      font-weight: 800;
+    }
+    .phase-meta { color: var(--muted); font-size: 0.85rem; }
+    .tasks { display: grid; gap: 0.48rem; margin-top: 0.75rem; }
+    .task {
+      display: grid;
+      grid-template-columns: 20px 1fr;
+      gap: 9px;
+      align-items: start;
+      color: var(--text);
+      font-size: 0.93rem;
+    }
+    .task input { width: 16px; height: 16px; margin-top: 0.2rem; accent-color: var(--accent); }
+    .task input:checked + span { color: var(--muted); text-decoration: line-through; }
+    .progress-row { display: flex; align-items: center; gap: 12px; margin: 0.9rem 0 0.3rem; }
+    .progress-track { flex: 1; height: 9px; overflow: hidden; border-radius: 999px; background: var(--surface-soft); }
+    .progress-bar { width: 0; height: 100%; background: var(--accent); transition: width 180ms ease; }
+    .progress-label { min-width: 72px; color: var(--muted); font-size: 0.84rem; text-align: right; }
+    .api-card { margin-top: 1rem; padding: 1rem; border: 1px solid var(--border); border-radius: 12px; }
+    .method { display: inline-block; margin-right: 0.5rem; padding: 0.15rem 0.45rem; border-radius: 5px; background: var(--success-soft); color: var(--success); font-size: 0.76rem; font-weight: 800; }
+    .method.get { background: var(--accent-soft); color: var(--accent); }
+    .status-list { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.8rem; }
+    .status { padding: 0.3rem 0.5rem; border-radius: 7px; background: var(--surface-soft); color: var(--muted); font-size: 0.78rem; }
+    .status strong { color: var(--text); }
+    .tree { white-space: pre; }
+    .do-not { color: var(--danger); font-weight: 700; }
+    .footer { padding: 12px 0 0; color: var(--muted); font-size: 0.84rem; text-align: center; }
+
+    @media (max-width: 900px) {
+      .layout { grid-template-columns: 1fr; }
+      .toc { position: static; display: flex; flex-wrap: wrap; gap: 0 1rem; }
+      .toc strong { width: 100%; }
+      .architecture { grid-template-columns: 1fr; justify-content: stretch; }
+      .arrow { transform: rotate(90deg); }
+      .node { min-width: 0; }
+      .grid.three { grid-template-columns: 1fr 1fr; }
+    }
+    @media (max-width: 620px) {
+      .page { width: min(100% - 20px, 1180px); }
+      .hero { padding-top: 36px; }
+      .grid, .grid.three, .branch { grid-template-columns: 1fr; }
+      .phase { grid-template-columns: 42px minmax(0, 1fr); gap: 11px; }
+      th, td { padding: 0.6rem 0.45rem; font-size: 0.84rem; }
+    }
+    @media print {
+      :root { --page: #fff; --surface: #fff; --surface-soft: #f3f5f8; --text: #111827; --muted: #4b5563; --border: #d1d5db; --accent: #2447bd; --accent-soft: #eef2ff; --shadow: none; }
+      body { font-size: 10pt; }
+      .page { width: 100%; padding: 0; }
+      .hero { padding: 12px 0 18px; }
+      .layout { display: block; }
+      .toc { display: none; }
+      section { break-inside: avoid; margin-bottom: 12px; }
+      .phase { break-inside: avoid; }
+      .task input { display: none; }
+      a { color: inherit; text-decoration: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <header class="hero">
+      <div class="eyebrow">Implementation handoff · Take-home assignment</div>
+      <h1>Transcription Service</h1>
+      <p class="lede">A decision-complete architecture and ordered delivery plan for a Python service that accepts media, transcribes Hebrew and English with an open Hugging Face model, and returns timestamped JSON.</p>
+      <div class="meta" aria-label="Plan metadata">
+        <span class="pill"><strong>Status</strong> Approved for implementation</span>
+        <span class="pill"><strong>Budget</strong> 24 hours</span>
+        <span class="pill"><strong>Default target</strong> CPU-only Docker</span>
+        <span class="pill"><strong>Updated</strong> 1 November 2026</span>
+      </div>
+    </header>
+
+    <div class="layout">
+      <nav class="toc" aria-label="Document sections">
+        <strong>Contents</strong>
+        <a href="#brief">Handoff brief</a>
+        <a href="#decisions">Decisions</a>
+        <a href="#architecture">Architecture</a>
+        <a href="#contract">API contract</a>
+        <a href="#structure">Project structure</a>
+        <a href="#plan">Ordered plan</a>
+        <a href="#tests">Testing</a>
+        <a href="#local">Local workflow</a>
+        <a href="#done">Definition of done</a>
+        <a href="#future">Future production path</a>
+      </nav>
+
+      <main>
+        <section id="brief">
+          <h2>Handoff brief</h2>
+          <p class="section-intro">Implement the phases below in order. Finish and test the audio vertical slice before adding video. Keep the first release stateless and synchronous; the goal is a small, defensible product, not a demonstration of every possible infrastructure component.</p>
+          <div class="callout success"><strong>Primary outcome:</strong> A reviewer can clone the repository, run one Docker command, upload an audio or video file, and receive a Hebrew or English transcription with timestamped segments.</div>
+          <div class="grid">
+            <div class="note">
+              <h3>Instructions for the coding agent</h3>
+              <ul>
+                <li>Work phase-by-phase and run the listed checks after every phase.</li>
+                <li>Prefer established libraries and standard-library functions over custom infrastructure.</li>
+                <li>Keep model-specific code behind the <code>Transcriber</code> interface.</li>
+                <li>Record any changed assumption in the README before implementing around it.</li>
+                <li>Do not silently expand the scope.</li>
+              </ul>
+            </div>
+            <div class="note">
+              <h3>Explicit non-goals</h3>
+              <ul>
+                <li>No database, accounts, authentication, transcript history, or retained uploads.</li>
+                <li>No Redis, task queue, Kubernetes, cloud storage, or GPU-only requirement.</li>
+                <li>No translation endpoint, speaker diarization, or live streaming.</li>
+                <li>No React build chain; use a small static page only.</li>
+              </ul>
+            </div>
+          </div>
+        </section>
+
+        <section id="decisions">
+          <h2>Architecture decisions</h2>
+          <div class="grid three">
+            <div class="decision"><div class="label">Language</div><div class="value">Python 3.12</div><div class="reason">Best-supported ecosystem for Hugging Face inference and fastest safe delivery.</div></div>
+            <div class="decision"><div class="label">HTTP framework</div><div class="value">FastAPI + Uvicorn</div><div class="reason">Typed contracts, generated OpenAPI, lifecycle hooks, and mature file-upload handling.</div></div>
+            <div class="decision"><div class="label">Inference runtime</div><div class="value">faster-whisper</div><div class="reason">CTranslate2-backed native inference with CPU int8 and GPU configuration options.</div></div>
+            <div class="decision"><div class="label">Default model</div><div class="value">Systran/faster-whisper-small</div><div class="reason">Multilingual model supporting Hebrew (<code>he</code>) and English with practical CPU requirements.</div></div>
+            <div class="decision"><div class="label">Persistence</div><div class="value">None</div><div class="reason">The required operation is request-response; media and transcripts have no defined retention lifecycle.</div></div>
+            <div class="decision"><div class="label">Execution</div><div class="value">Synchronous, bounded</div><div class="reason">Appropriate for a take-home vertical slice; document the durable asynchronous evolution.</div></div>
+            <div class="decision"><div class="label">Package management</div><div class="value">uv + pyproject.toml</div><div class="reason">Fast reproducible setup and a committed transitive dependency lockfile.</div></div>
+            <div class="decision"><div class="label">Default limits</div><div class="value">100 MiB / 15 minutes</div><div class="reason">Configurable guardrails that keep synchronous CPU requests bounded.</div></div>
+            <div class="decision"><div class="label">Concurrency</div><div class="value">1 inference per process</div><div class="reason">Predictable model memory use; run blocking inference off the event loop.</div></div>
+          </div>
+          <div class="callout warning"><strong>Database decision:</strong> Do not add PostgreSQL merely as a seniority signal. Persistence becomes justified when the product adds durable jobs, accounts, history, or retention. Explain this trade-off in the README.</div>
+        </section>
+
+        <section id="architecture">
+          <h2>Runtime architecture</h2>
+          <p class="section-intro">One process owns one loaded model. FastAPI handles HTTP and validation; the service layer owns use-case rules; the adapter is the only code that knows faster-whisper.</p>
+          <div class="architecture" role="img" aria-label="Client uploads multipart media to FastAPI, which validates it, passes it to a transcription service, then to the faster-whisper adapter and Hugging Face model, returning JSON.">
+            <div class="node"><strong>Browser / curl</strong><span>multipart upload</span></div>
+            <div class="arrow" aria-hidden="true">→</div>
+            <div class="node"><strong>FastAPI</strong><span>HTTP + schemas</span></div>
+            <div class="arrow" aria-hidden="true">→</div>
+            <div class="node"><strong>Service</strong><span>limits + concurrency</span></div>
+            <div class="arrow" aria-hidden="true">→</div>
+            <div class="node"><strong>Model adapter</strong><span>faster-whisper</span></div>
+          </div>
+          <div class="branch" aria-label="Supporting runtime components">
+            <div class="node"><strong>PyAV</strong><span>inspect container; decode first audio stream</span></div>
+            <div class="node"><strong>CTranslate2</strong><span>CPU int8 by default</span></div>
+            <div class="node"><strong>HF cache volume</strong><span>reuse downloaded weights</span></div>
+          </div>
+
+          <h3 style="margin-top:1.35rem">Request lifecycle</h3>
+          <ol>
+            <li>Reject an obviously oversized request using <code>Content-Length</code> when present.</li>
+            <li>Receive the upload through FastAPI <code>UploadFile</code>; never use the client filename as a path.</li>
+            <li>Check the actual uploaded size and configured media allowlist.</li>
+            <li>Use PyAV to verify the container is readable and contains at least one audio stream; reset the file position afterward.</li>
+            <li>Acquire the inference semaphore with a configurable queue timeout.</li>
+            <li>Run blocking model inference in an AnyIO worker thread, not on the async event loop.</li>
+            <li>Fully consume faster-whisper's lazy segment generator and map it into application schemas.</li>
+            <li>Return UTF-8 JSON and close the upload in a <code>finally</code> block on success or error.</li>
+          </ol>
+
+          <div class="callout"><strong>Model lifecycle:</strong> Load the model once in FastAPI's lifespan hook. Readiness is false until loading succeeds. Run a single Uvicorn worker by default because additional workers duplicate model memory.</div>
+        </section>
+
+        <section id="contract">
+          <h2>HTTP contract</h2>
+          <p class="section-intro">Version the public API from the start. Keep model internals out of the route handler and return one stable error envelope.</p>
+
+          <div class="api-card">
+            <h3><span class="method">POST</span><code>/v1/transcriptions</code></h3>
+            <p><strong>Content type:</strong> <code>multipart/form-data</code></p>
+            <table>
+              <thead><tr><th>Field</th><th>Required</th><th>Meaning</th></tr></thead>
+              <tbody>
+                <tr><td><code>file</code></td><td>Yes</td><td>Audio in phase 1; audio or video from phase 2.</td></tr>
+                <tr><td><code>language</code></td><td>No</td><td><code>auto</code> by default; accept Whisper-supported language codes such as <code>he</code> and <code>en</code>.</td></tr>
+              </tbody>
+            </table>
+            <pre><code>{
+  "text": "שלום, זוהי בדיקה של מערכת התמלול.",
+  "language": "he",
+  "language_probability": 0.97,
+  "duration_seconds": 12.4,
+  "processing_time_seconds": 3.2,
+  "model": "Systran/faster-whisper-small",
+  "segments": [
+    {"start": 0.0, "end": 3.8, "text": "שלום, זוהי בדיקה."}
+  ]
+}</code></pre>
+            <div class="status-list" aria-label="Response statuses">
+              <span class="status"><strong>200</strong> completed</span>
+              <span class="status"><strong>400</strong> empty/bad request</span>
+              <span class="status"><strong>413</strong> too large</span>
+              <span class="status"><strong>415</strong> unsupported/undecodable</span>
+              <span class="status"><strong>422</strong> invalid language/no audio track</span>
+              <span class="status"><strong>503</strong> model unavailable/busy</span>
+            </div>
+          </div>
+
+          <div class="api-card">
+            <h3><span class="method get">GET</span><code>/health/live</code></h3>
+            <p>Returns success when the HTTP process is alive. It must not invoke the model.</p>
+          </div>
+          <div class="api-card">
+            <h3><span class="method get">GET</span><code>/health/ready</code></h3>
+            <p>Returns success only after the model has loaded and the service can accept work.</p>
+          </div>
+
+          <h3 style="margin-top:1.35rem">Error envelope</h3>
+          <pre><code>{
+  "error": {
+    "code": "unsupported_media",
+    "message": "The uploaded file could not be decoded.",
+    "request_id": "01J..."
+  }
+}</code></pre>
+          <p>Log the exception and context server-side, but do not expose stack traces, local paths, or dependency error strings to clients.</p>
+        </section>
+
+        <section id="structure">
+          <h2>Target project structure</h2>
+          <p class="section-intro">Use enough separation for testing and substitution, but avoid repository layers or domain frameworks that have no job in this product.</p>
+          <pre class="tree"><code>TranscriptionModel/
+├── src/transcription_service/
+│   ├── __init__.py
+│   ├── main.py                    # create_app + lifespan
+│   ├── api/
+│   │   ├── health.py
+│   │   └── transcriptions.py
+│   ├── core/
+│   │   ├── config.py              # pydantic-settings
+│   │   ├── errors.py              # typed app errors + mapping
+│   │   └── logging.py             # request-aware structured logs
+│   ├── schemas/
+│   │   └── transcription.py       # request/response models
+│   ├── services/
+│   │   └── transcription.py       # use case + Transcriber protocol
+│   ├── adapters/
+│   │   ├── faster_whisper.py      # model implementation
+│   │   └── media.py               # PyAV inspection
+│   └── web/
+│       └── index.html              # minimal upload UI
+├── tests/
+│   ├── unit/
+│   ├── integration/
+│   ├── fixtures/
+│   └── conftest.py
+├── docs/architecture-plan.html
+├── .env.example
+├── .gitignore
+├── Dockerfile
+├── compose.yaml
+├── Makefile
+├── pyproject.toml
+├── uv.lock
+└── README.md</code></pre>
+          <div class="grid">
+            <div class="note"><h3>Runtime dependencies</h3><p>FastAPI, Uvicorn, faster-whisper, PyAV, pydantic-settings, python-multipart, and a mature structured-logging package. Import direct dependencies explicitly even when another library currently installs them transitively.</p></div>
+            <div class="note"><h3>Development dependencies</h3><p>pytest, httpx, pytest-cov, Ruff, and mypy. Pin all transitive versions through <code>uv.lock</code>; do not hand-maintain a second requirements file.</p></div>
+          </div>
+        </section>
+
+        <section id="plan">
+          <h2>Ordered implementation plan</h2>
+          <p class="section-intro">Checkbox state is saved in this browser. A phase is complete only when its acceptance checks pass.</p>
+          <div class="progress-row" aria-label="Implementation progress">
+            <div class="progress-track"><div class="progress-bar" id="progress-bar"></div></div>
+            <div class="progress-label" id="progress-label">0 / 0</div>
+          </div>
+
+          <article class="phase">
+            <div class="phase-number">0</div>
+            <div>
+              <h3>Scaffold and contracts</h3>
+              <div class="phase-meta">Estimated 2 hours · No model download required</div>
+              <div class="tasks">
+                <label class="task"><input type="checkbox" data-task="0-1" checked><span>Create the source tree, <code>pyproject.toml</code>, dependency groups, and locked <code>uv.lock</code>.</span></label>
+                <label class="task"><input type="checkbox" data-task="0-2" checked><span>Implement typed configuration with documented defaults and environment-variable overrides.</span></label>
+                <label class="task"><input type="checkbox" data-task="0-3" checked><span>Define response schemas, application error types, and the <code>Transcriber</code> protocol before the real adapter.</span></label>
+                <label class="task"><input type="checkbox" data-task="0-4" checked><span>Create <code>create_app()</code>, health routes, request IDs, and dependency wiring.</span></label>
+                <label class="task"><input type="checkbox" data-task="0-5" checked><span>Add Ruff, mypy, pytest, and initial tests for configuration and health endpoints.</span></label>
+              </div>
+              <div class="callout"><strong>Exit check:</strong> <code>uv run ruff check .</code>, <code>uv run mypy src</code>, and <code>uv run pytest</code> all pass without loading Whisper.</div>
+            </div>
+          </article>
+
+          <article class="phase">
+            <div class="phase-number">1</div>
+            <div>
+              <h3>Audio transcription vertical slice</h3>
+              <div class="phase-meta">Estimated 7 hours · First usable product increment</div>
+              <div class="tasks">
+                <label class="task"><input type="checkbox" data-task="1-1" checked><span>Load <code>Systran/faster-whisper-small</code> once during lifespan using CPU <code>int8</code> defaults.</span></label>
+                <label class="task"><input type="checkbox" data-task="1-2" checked><span>Implement PyAV inspection for WAV, MP3, M4A/AAC, FLAC, and OGG/Opus; require an audio stream.</span></label>
+                <label class="task"><input type="checkbox" data-task="1-3" checked><span>Implement <code>POST /v1/transcriptions</code> with <code>auto</code>, <code>he</code>, and <code>en</code> support plus general valid Whisper language codes.</span></label>
+                <label class="task"><input type="checkbox" data-task="1-4" checked><span>Move blocking inference to a worker thread, limit concurrency with a semaphore, and consume all lazy segments.</span></label>
+                <label class="task"><input type="checkbox" data-task="1-5" checked><span>Enforce upload and duration limits; always close the upload; map known decoding and inference failures.</span></label>
+                <label class="task"><input type="checkbox" data-task="1-6" checked><span>Test the route with a fake transcriber, synthetic audio fixtures, Hebrew Unicode output, failures, and cleanup.</span></label>
+              </div>
+              <div class="callout"><strong>Exit check:</strong> Fast tests pass, then one manual English audio and one Hebrew audio complete through the real model.</div>
+            </div>
+          </article>
+
+          <article class="phase">
+            <div class="phase-number">2</div>
+            <div>
+              <h3>Add video-container support</h3>
+              <div class="phase-meta">Estimated 2 hours · Reuse the audio pipeline</div>
+              <div class="tasks">
+                <label class="task"><input type="checkbox" data-task="2-1"><span>Extend the media allowlist to MP4, MOV, WebM, and MKV without creating a separate video transcription path.</span></label>
+                <label class="task"><input type="checkbox" data-task="2-2"><span>Have PyAV select the first audio stream and return a typed <code>no_audio_stream</code> error when absent.</span></label>
+                <label class="task"><input type="checkbox" data-task="2-3"><span>Add small synthetic fixtures for a video with audio, a video without audio, and a corrupt container.</span></label>
+                <label class="task"><input type="checkbox" data-task="2-4"><span>Verify duration limits and temporary-resource cleanup for video uploads.</span></label>
+              </div>
+              <div class="callout"><strong>Exit check:</strong> One MP4 and one WebM complete through the same endpoint; a silent/no-audio video returns the documented client error.</div>
+            </div>
+          </article>
+
+          <article class="phase">
+            <div class="phase-number">3</div>
+            <div>
+              <h3>Minimal human-facing upload UI</h3>
+              <div class="phase-meta">Estimated 2 hours · Plain HTML, CSS, and JavaScript</div>
+              <div class="tasks">
+                <label class="task"><input type="checkbox" data-task="3-1"><span>Serve a single accessible page with file selection, drag/drop, and an Auto / Hebrew / English language selector.</span></label>
+                <label class="task"><input type="checkbox" data-task="3-2"><span>Show upload/transcribing state, a useful error message, complete text, and timestamped segments.</span></label>
+                <label class="task"><input type="checkbox" data-task="3-3"><span>Render transcript content with <code>dir="auto"</code> so Hebrew and English use the correct direction.</span></label>
+                <label class="task"><input type="checkbox" data-task="3-4"><span>Add copy-to-clipboard and download-as-text actions without adding a frontend build tool.</span></label>
+              </div>
+              <div class="callout"><strong>Exit check:</strong> Complete the flow using only the browser, test keyboard operation, and visually inspect both Hebrew RTL and English LTR output.</div>
+            </div>
+          </article>
+
+          <article class="phase">
+            <div class="phase-number">4</div>
+            <div>
+              <h3>Packaging, CI, and documentation</h3>
+              <div class="phase-meta">Estimated 5 hours · Reviewer-ready delivery</div>
+              <div class="tasks">
+                <label class="task"><input type="checkbox" data-task="4-1"><span>Create a non-root, CPU-first Docker image and Compose service with a persistent Hugging Face cache volume.</span></label>
+                <label class="task"><input type="checkbox" data-task="4-2"><span>Add Make targets for setup, run, check, test, real-model smoke test, and Docker smoke test.</span></label>
+                <label class="task"><input type="checkbox" data-task="4-3"><span>Add GitHub Actions for lint, formatting, typing, and fast tests; do not download model weights in normal CI.</span></label>
+                <label class="task"><input type="checkbox" data-task="4-4"><span>Write README quickstart, curl examples, configuration table, architecture, limits, assumptions, privacy behavior, and trade-offs.</span></label>
+                <label class="task"><input type="checkbox" data-task="4-5"><span>Document the asynchronous production evolution and why the take-home version intentionally has no database.</span></label>
+              </div>
+              <div class="callout"><strong>Exit check:</strong> A clean clone succeeds using only the README and <code>docker compose up --build</code>.</div>
+            </div>
+          </article>
+
+          <article class="phase">
+            <div class="phase-number">5</div>
+            <div>
+              <h3>Final verification and submission</h3>
+              <div class="phase-meta">Estimated 4 hours · Includes contingency buffer</div>
+              <div class="tasks">
+                <label class="task"><input type="checkbox" data-task="5-1"><span>Run all fast checks and inspect test coverage for validation, errors, lifecycle, and cleanup—not just happy paths.</span></label>
+                <label class="task"><input type="checkbox" data-task="5-2"><span>Build the container from scratch and verify the first model download and cached second startup.</span></label>
+                <label class="task"><input type="checkbox" data-task="5-3"><span>Smoke-test English audio, Hebrew audio, mixed Hebrew/English audio, video with audio, and invalid media.</span></label>
+                <label class="task"><input type="checkbox" data-task="5-4"><span>Review logs for secrets, local paths, stack traces in responses, and accidental retention of media or transcripts.</span></label>
+                <label class="task"><input type="checkbox" data-task="5-5"><span>Proofread the README from a reviewer perspective and confirm every command is copy-pasteable.</span></label>
+              </div>
+            </div>
+          </article>
+        </section>
+
+        <section id="tests">
+          <h2>Testing strategy</h2>
+          <div class="grid">
+            <div class="note">
+              <h3>Fast suite — always run</h3>
+              <ul>
+                <li>Configuration parsing and invalid combinations.</li>
+                <li>Health before/after model readiness.</li>
+                <li>API contract using a deterministic fake transcriber.</li>
+                <li>Upload size, MIME/container mismatch, corrupt media, and missing audio.</li>
+                <li>Language validation, Hebrew Unicode serialization, and segment mapping.</li>
+                <li>Model errors, overload behavior, request IDs, and resource cleanup.</li>
+              </ul>
+            </div>
+            <div class="note">
+              <h3>Slow suite — explicit opt-in</h3>
+              <ul>
+                <li>Download and load the configured Hugging Face model.</li>
+                <li>Transcribe one short known audio sample.</li>
+                <li>Assert language, non-empty text, ordered timestamps, and plausible duration.</li>
+                <li>Do not run this suite in normal CI; model download and output depend on hardware.</li>
+              </ul>
+            </div>
+          </div>
+          <table style="margin-top:1rem">
+            <thead><tr><th>Layer</th><th>Real dependency</th><th>Purpose</th></tr></thead>
+            <tbody>
+              <tr><td>Unit</td><td>None</td><td>Service rules, error mapping, schema construction.</td></tr>
+              <tr><td>API integration</td><td>FastAPI + fake model</td><td>Multipart behavior and public HTTP contract.</td></tr>
+              <tr><td>Media integration</td><td>PyAV + fixtures</td><td>Real container/audio-stream inspection.</td></tr>
+              <tr><td>Model smoke</td><td>Hugging Face + faster-whisper</td><td>Prove the real inference path works.</td></tr>
+              <tr><td>Container smoke</td><td>Docker</td><td>Prove the documented reviewer experience.</td></tr>
+            </tbody>
+          </table>
+        </section>
+
+        <section id="local">
+          <h2>Local build, run, and test workflow</h2>
+          <h3>Reviewer path</h3>
+          <pre><code>git clone &lt;repository-url&gt;
+cd TranscriptionModel
+docker compose up --build
+
+# In another terminal:
+curl --fail http://localhost:8000/health/ready
+curl --fail -F "file=@sample.mp3" -F "language=he" \
+  http://localhost:8000/v1/transcriptions</code></pre>
+          <p>The first run downloads approximately 500 MB of model files. Compose must mount a named cache volume so later starts reuse them.</p>
+
+          <h3 style="margin-top:1.25rem">Developer path</h3>
+          <pre><code>uv sync
+cp .env.example .env
+make run          # local API with reload
+make check        # Ruff + mypy + fast pytest suite
+make test-model MEDIA_FILE=/absolute/path/to/sample.mp3
+make smoke        # health + end-to-end request against running service</code></pre>
+          <div class="callout warning"><strong>Do not hide setup costs:</strong> The README must call out the first model download, expected CPU behavior, supported formats, synchronous limits, and the fact that one worker is deliberate.</div>
+        </section>
+
+        <section id="done">
+          <h2>Definition of done</h2>
+          <div class="grid">
+            <div class="note">
+              <h3>Functional</h3>
+              <ul>
+                <li>Audio and video with audio are accepted through one endpoint.</li>
+                <li>Hebrew and English work with auto-detection or explicit language codes.</li>
+                <li>Response includes full text, language metadata, duration, processing time, and timestamped segments.</li>
+                <li>Browser UI displays Hebrew RTL and English LTR correctly.</li>
+              </ul>
+            </div>
+            <div class="note">
+              <h3>Operational</h3>
+              <ul>
+                <li>Model loads once; readiness accurately reflects it.</li>
+                <li>Uploads are bounded and closed on every path.</li>
+                <li>Inference cannot block the event loop or run without a concurrency limit.</li>
+                <li>No uploaded media or transcript persists after the response.</li>
+              </ul>
+            </div>
+            <div class="note">
+              <h3>Quality</h3>
+              <ul>
+                <li>Lint, format, type, and fast tests pass locally and in CI.</li>
+                <li>Errors are stable, useful, and do not leak internal details.</li>
+                <li>The real model and Docker flows have been smoke-tested.</li>
+                <li>Code is organized around boundaries, not speculative abstractions.</li>
+              </ul>
+            </div>
+            <div class="note">
+              <h3>Delivery</h3>
+              <ul>
+                <li>Repository is cloneable and contains no model weights or secrets.</li>
+                <li>README commands work on a clean CPU-only environment.</li>
+                <li>Assumptions, shortcuts, security limits, and future architecture are explicit.</li>
+                <li>Git history shows coherent product increments.</li>
+              </ul>
+            </div>
+          </div>
+        </section>
+
+        <section id="future">
+          <h2>Future production evolution</h2>
+          <p class="section-intro">Do not implement this within the 24-hour scope. Include it in the README to demonstrate how the boundaries evolve when product requirements change.</p>
+          <div class="architecture" role="img" aria-label="Future client uploads media to object storage through an API, a durable queue sends a job to an inference worker, and status and results are stored in PostgreSQL.">
+            <div class="node"><strong>API</strong><span>202 + job ID</span></div>
+            <div class="arrow" aria-hidden="true">→</div>
+            <div class="node"><strong>Object storage</strong><span>temporary media</span></div>
+            <div class="arrow" aria-hidden="true">→</div>
+            <div class="node"><strong>Durable queue</strong><span>retries + backpressure</span></div>
+            <div class="arrow" aria-hidden="true">→</div>
+            <div class="node"><strong>GPU workers</strong><span>independent scaling</span></div>
+          </div>
+          <div class="branch">
+            <div class="node future"><strong>PostgreSQL</strong><span>job state + result metadata</span></div>
+            <div class="node future"><strong>Auth + quotas</strong><span>ownership and abuse control</span></div>
+            <div class="node future"><strong>Retention worker</strong><span>delete expired media/results</span></div>
+          </div>
+          <p style="margin-top:1rem">At that point, the public flow becomes <code>POST → 202</code>, <code>GET /v1/transcriptions/{id}</code>, and optionally webhook delivery. The current <code>Transcriber</code> boundary remains reusable inside the worker.</p>
+        </section>
+
+        <p class="footer">This document is the implementation source of truth. If the implementation diverges, update the decision and rationale here and in the README.</p>
+      </main>
+    </div>
+  </div>
+
+  <script>
+    (() => {
+      const storageKey = "transcription-architecture-plan-progress-v1";
+      const tasks = Array.from(document.querySelectorAll("input[data-task]"));
+      const progressBar = document.getElementById("progress-bar");
+      const progressLabel = document.getElementById("progress-label");
+
+      let saved = {};
+      try {
+        saved = JSON.parse(localStorage.getItem(storageKey) || "{}");
+      } catch (_) {
+        saved = {};
+      }
+
+      const updateProgress = () => {
+        const completed = tasks.filter((task) => task.checked).length;
+        const percentage = tasks.length ? Math.round((completed / tasks.length) * 100) : 0;
+        progressBar.style.width = `${percentage}%`;
+        progressLabel.textContent = `${completed} / ${tasks.length}`;
+        progressBar.parentElement.setAttribute("aria-valuemin", "0");
+        progressBar.parentElement.setAttribute("aria-valuemax", String(tasks.length));
+        progressBar.parentElement.setAttribute("aria-valuenow", String(completed));
+        progressBar.parentElement.setAttribute("role", "progressbar");
+      };
+
+      tasks.forEach((task) => {
+        task.checked = Object.hasOwn(saved, task.dataset.task)
+          ? saved[task.dataset.task] === true
+          : task.defaultChecked;
+        task.addEventListener("change", () => {
+          saved[task.dataset.task] = task.checked;
+          try {
+            localStorage.setItem(storageKey, JSON.stringify(saved));
+          } catch (_) {
+            // Progress persistence is optional; the checklist remains usable.
+          }
+          updateProgress();
+        });
+      });
+
+      updateProgress();
+    })();
+  </script>
+</body>
+</html>
