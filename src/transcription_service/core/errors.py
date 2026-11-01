@@ -66,7 +66,7 @@ class UnsupportedMediaError(ApplicationError):
 
     code = "unsupported_media"
     status_code = HTTPStatus.UNSUPPORTED_MEDIA_TYPE
-    default_message = "The uploaded audio format is unsupported or could not be decoded."
+    default_message = "The uploaded media format is unsupported or could not be decoded."
 
 
 class NoAudioStreamError(ApplicationError):

@@ -13,7 +13,7 @@ from starlette.middleware.base import RequestResponseEndpoint
 
 from transcription_service import __version__
 from transcription_service.adapters.faster_whisper import FasterWhisperTranscriber
-from transcription_service.adapters.media import PyAvAudioInspector
+from transcription_service.adapters.media import PyAvMediaInspector
 from transcription_service.api.health import router as health_router
 from transcription_service.api.transcriptions import router as transcription_router
 from transcription_service.core.config import Settings, get_settings
@@ -51,7 +51,7 @@ def create_app(
     resolved_settings = settings or get_settings()
     configure_logging(resolved_settings.log_level)
     runtime_status = RuntimeStatus()
-    resolved_media_inspector = media_inspector or PyAvAudioInspector()
+    resolved_media_inspector = media_inspector or PyAvMediaInspector()
 
     @asynccontextmanager
     async def lifespan(lifespan_app: FastAPI) -> AsyncIterator[None]:

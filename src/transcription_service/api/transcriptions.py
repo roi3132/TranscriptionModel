@@ -1,4 +1,4 @@
-"""Synchronous transcription endpoint."""
+"""Synchronous media transcription endpoint."""
 
 import re
 from functools import partial
@@ -62,17 +62,17 @@ def _stream_size(media: BinaryIO) -> int:
         HTTPStatus.INTERNAL_SERVER_ERROR: {"model": ErrorResponse},
         HTTPStatus.SERVICE_UNAVAILABLE: {"model": ErrorResponse},
     },
-    summary="Transcribe an audio file",
+    summary="Transcribe an audio or video file",
 )
 async def create_transcription(
-    file: Annotated[UploadFile, File(description="Audio file to transcribe")],
+    file: Annotated[UploadFile, File(description="Audio or video file to transcribe")],
     service: TranscriptionServiceDependency,
     language: Annotated[
         str,
         Form(description="Whisper language code or 'auto' for detection"),
     ] = "auto",
 ) -> TranscriptionResponse:
-    """Return a completed, timestamped transcription for one audio upload."""
+    """Return a completed, timestamped transcription for one media upload."""
 
     try:
         size_bytes = file.size

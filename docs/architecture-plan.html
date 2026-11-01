@@ -501,10 +501,10 @@
               <h3>Add video-container support</h3>
               <div class="phase-meta">Estimated 2 hours · Reuse the audio pipeline</div>
               <div class="tasks">
-                <label class="task"><input type="checkbox" data-task="2-1"><span>Extend the media allowlist to MP4, MOV, WebM, and MKV without creating a separate video transcription path.</span></label>
-                <label class="task"><input type="checkbox" data-task="2-2"><span>Have PyAV select the first audio stream and return a typed <code>no_audio_stream</code> error when absent.</span></label>
-                <label class="task"><input type="checkbox" data-task="2-3"><span>Add small synthetic fixtures for a video with audio, a video without audio, and a corrupt container.</span></label>
-                <label class="task"><input type="checkbox" data-task="2-4"><span>Verify duration limits and temporary-resource cleanup for video uploads.</span></label>
+                <label class="task"><input type="checkbox" data-task="2-1" checked><span>Extend the media allowlist to MP4, MOV, WebM, and MKV without creating a separate video transcription path.</span></label>
+                <label class="task"><input type="checkbox" data-task="2-2" checked><span>Have PyAV select the first audio stream and return a typed <code>no_audio_stream</code> error when absent.</span></label>
+                <label class="task"><input type="checkbox" data-task="2-3" checked><span>Add small synthetic fixtures for a video with audio, a video without audio, and a corrupt container.</span></label>
+                <label class="task"><input type="checkbox" data-task="2-4" checked><span>Verify duration limits and temporary-resource cleanup for video uploads.</span></label>
               </div>
               <div class="callout"><strong>Exit check:</strong> One MP4 and one WebM complete through the same endpoint; a silent/no-audio video returns the documented client error.</div>
             </div>
@@ -685,7 +685,7 @@ make smoke        # health + end-to-end request against running service</code></
 
   <script>
     (() => {
-      const storageKey = "transcription-architecture-plan-progress-v1";
+      const storageKey = "transcription-architecture-plan-progress-v2";
       const tasks = Array.from(document.querySelectorAll("input[data-task]"));
       const progressBar = document.getElementById("progress-bar");
       const progressLabel = document.getElementById("progress-label");

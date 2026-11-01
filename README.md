@@ -1,15 +1,17 @@
 # Transcription Service
 
-A production-minded FastAPI service that accepts an audio file and returns a timestamped
+A production-minded FastAPI service that accepts an audio or video file and returns a timestamped
 transcription produced by an open multilingual Whisper model from Hugging Face.
 
-The service currently supports the complete audio workflow. Video-container support, the browser
-UI, Docker packaging, and CI are the next planned phases. See
+The service currently supports the complete audio and video-container workflow. The browser UI,
+Docker packaging, and CI are the next planned phases. See
 [`docs/architecture-plan.html`](docs/architecture-plan.html) for the ordered implementation plan.
 
 ## Current capabilities
 
-- Upload WAV, MP3, M4A/AAC, FLAC, OGG, or Opus through `multipart/form-data`.
+- Upload WAV, MP3, M4A/AAC, FLAC, OGG, Opus, MP4, MOV, WebM, or MKV through
+  `multipart/form-data`.
+- Transcribe the first audio stream from a supported video container without a separate video path.
 - Transcribe Hebrew (`he`), English (`en`), or another Whisper-supported language.
 - Automatically detect the language with `language=auto`.
 - Return full text, detected-language confidence, media duration, processing time, and timestamped
@@ -73,8 +75,14 @@ Run the API:
 uv run uvicorn transcription_service.main:app --reload
 ```
 
-The first startup downloads approximately 500 MB of model files into the Hugging Face cache.
-Later runs reuse the cached model.
+The first startup downloads approximately 500 MB of model files into the Hugging Face user cache
+(normally `~/.cache/huggingface/hub`), which is outside this repository. Later runs reuse the cached
+model. The local `.venv/`, `.uv-cache/`, `.cache/`, `models/`, `uploads/`, and `.env` paths are also
+excluded by `.gitignore`, so dependencies, model weights, uploaded media, and local configuration are
+not committed.
+
+You can verify this at any time with `git status --short --ignored`. Ignored generated files appear
+with `!!`; they must not appear as staged or tracked files.
 
 Available endpoints:
 
@@ -126,9 +134,10 @@ uv run pytest --cov=transcription_service --cov-report=term-missing
 Run an explicit real-model smoke test against one or more local samples:
 
 ```bash
-uv run python scripts/smoke_audio.py \
+uv run python scripts/smoke_media.py \
   en=/absolute/path/to/english.wav \
-  he=/absolute/path/to/hebrew.wav
+  he=/absolute/path/to/hebrew.m4a \
+  en=/absolute/path/to/video.mp4
 ```
 
 The smoke test loads the configured Hugging Face model, waits for readiness, and sends every sample
@@ -262,13 +271,19 @@ binary. The service checks the declared extension/MIME type for product policy, 
 the authoritative container and audio-stream validation. Client-provided filenames are never used
 as server filesystem paths.
 
+Audio and video intentionally use the same endpoint and transcription pipeline. For MP4, MOV,
+WebM, and MKV, PyAV selects the first audio stream; the video frames are not decoded or copied into
+a separate temporary file. A readable video without audio returns the typed `no_audio_stream`
+client error. Selecting among multiple audio tracks is deferred until a product requirement defines
+the desired user experience and API contract.
+
 ### Fast tests plus an explicit real-model smoke test
 
 Unit and API tests must remain deterministic and fast, so they use a fake `Transcriber` while still
-using real PyAV for media integration tests. A separate opt-in smoke test covers model download,
-native runtime loading, audio decoding, and actual English/Hebrew inference. Both layers are needed:
-the PyAV 19 issue demonstrated that mocked tests alone cannot validate third-party binary
-integration.
+using real PyAV and synthetic audio/video containers for media integration tests. A separate opt-in
+smoke test covers model download, native runtime loading, media audio-stream decoding, and actual
+English/Hebrew inference. Both layers are needed: the PyAV 19 issue demonstrated that mocked tests
+alone cannot validate third-party binary integration.
 
 ## Error behavior
 
@@ -278,7 +293,7 @@ Every handled failure uses a stable envelope:
 {
   "error": {
     "code": "unsupported_media",
-    "message": "The uploaded audio format is unsupported or could not be decoded.",
+    "message": "The uploaded media format is unsupported or could not be decoded.",
     "request_id": "..."
   }
 }
@@ -300,8 +315,8 @@ to clients. Every response includes `X-Request-ID` for correlation.
 
 ## Current limitations and next steps
 
-- Video containers are not accepted yet. Phase 2 will reuse the same audio pipeline and extract the
-  first audio stream from MP4, MOV, WebM, and MKV.
+- Only the first audio stream in a video container is transcribed; the API does not yet expose audio
+  track selection.
 - The browser upload UI is not implemented yet. It will render transcript text with `dir="auto"`
   for correct Hebrew RTL and English LTR behavior.
 - Docker and GitHub Actions are not implemented yet. Until that phase, the truthful supported run

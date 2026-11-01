@@ -3,7 +3,9 @@
 from collections.abc import Callable
 from typing import BinaryIO
 
+import pytest
 from fastapi.testclient import TestClient
+from starlette.datastructures import UploadFile
 
 from tests.conftest import FakeTranscriber
 from transcription_service.core.config import Settings
@@ -98,17 +100,98 @@ def test_rejects_corrupt_audio(client: TestClient) -> None:
     assert response.json()["error"]["code"] == "unsupported_media"
 
 
-def test_phase_one_rejects_video_content_type(
+@pytest.mark.parametrize(
+    ("filename", "content_type", "container_format"),
+    [
+        ("sample.mp4", "video/mp4", "mp4"),
+        ("sample.mov", "video/quicktime", "mov"),
+        ("sample.webm", "video/webm", "webm"),
+        ("sample.mkv", "video/x-matroska", "matroska"),
+    ],
+)
+def test_transcribes_video_through_existing_endpoint(
     client: TestClient,
-    wav_factory: Callable[[float], bytes],
+    fake_transcriber: FakeTranscriber,
+    video_with_audio_factory: Callable[[str, float], bytes],
+    filename: str,
+    content_type: str,
+    container_format: str,
 ) -> None:
     response = client.post(
         "/v1/transcriptions",
-        files={"file": ("sample.wav", wav_factory(0.25), "video/mp4")},
+        files={
+            "file": (
+                filename,
+                video_with_audio_factory(container_format, 0.25),
+                content_type,
+            )
+        },
+        data={"language": "en"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["text"] == "Hello world"
+    assert fake_transcriber.requested_languages == ["en"]
+
+
+def test_rejects_video_without_audio_stream(
+    client: TestClient,
+    fake_transcriber: FakeTranscriber,
+    video_without_audio_factory: Callable[[str, float], bytes],
+) -> None:
+    response = client.post(
+        "/v1/transcriptions",
+        files={
+            "file": (
+                "silent.mp4",
+                video_without_audio_factory("mp4", 0.25),
+                "video/mp4",
+            )
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "no_audio_stream"
+    assert fake_transcriber.requested_languages == []
+
+
+def test_rejects_corrupt_video(client: TestClient) -> None:
+    response = client.post(
+        "/v1/transcriptions",
+        files={"file": ("broken.webm", b"not a webm", "video/webm")},
     )
 
     assert response.status_code == 415
     assert response.json()["error"]["code"] == "unsupported_media"
+
+
+def test_closes_video_upload_after_request(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    video_with_audio_factory: Callable[[str, float], bytes],
+) -> None:
+    closed_filenames: list[str | None] = []
+    original_close = UploadFile.close
+
+    async def tracked_close(upload: UploadFile) -> None:
+        closed_filenames.append(upload.filename)
+        await original_close(upload)
+
+    monkeypatch.setattr(UploadFile, "close", tracked_close)
+
+    response = client.post(
+        "/v1/transcriptions",
+        files={
+            "file": (
+                "sample.mp4",
+                video_with_audio_factory("mp4", 0.25),
+                "video/mp4",
+            )
+        },
+    )
+
+    assert response.status_code == 200
+    assert "sample.mp4" in closed_filenames
 
 
 def test_rejects_upload_over_byte_limit(
@@ -142,6 +225,31 @@ def test_rejects_audio_over_duration_limit_before_inference(
         response = limited_client.post(
             "/v1/transcriptions",
             files={"file": ("sample.wav", wav_factory(0.25), "audio/wav")},
+        )
+
+    assert response.status_code == 413
+    assert response.json()["error"]["code"] == "media_too_long"
+    assert fake_transcriber.requested_languages == []
+
+
+def test_rejects_video_over_duration_limit_before_inference(
+    settings: Settings,
+    fake_transcriber: FakeTranscriber,
+    video_with_audio_factory: Callable[[str, float], bytes],
+) -> None:
+    limited_settings = settings.model_copy(update={"max_media_duration_seconds": 0.1})
+    limited_app = create_app(limited_settings, transcriber_factory=lambda _: fake_transcriber)
+
+    with TestClient(limited_app) as limited_client:
+        response = limited_client.post(
+            "/v1/transcriptions",
+            files={
+                "file": (
+                    "sample.webm",
+                    video_with_audio_factory("webm", 0.5),
+                    "video/webm",
+                )
+            },
         )
 
     assert response.status_code == 413

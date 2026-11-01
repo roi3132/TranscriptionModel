@@ -1,7 +1,8 @@
-"""Run explicit real-model smoke tests against one or more local audio files."""
+"""Run explicit real-model smoke tests against one or more local media files."""
 
 import argparse
 import json
+import mimetypes
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -28,7 +29,7 @@ def main() -> None:
         nargs="+",
         type=_sample,
         metavar="LANGUAGE=PATH",
-        help="audio sample and explicit Whisper language code",
+        help="audio/video sample and explicit Whisper language code",
     )
     args = parser.parse_args()
 
@@ -38,10 +39,11 @@ def main() -> None:
             raise SystemExit(f"model did not become ready: {ready.text}")
 
         for language, path in args.sample:
-            with path.open("rb") as audio:
+            content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+            with path.open("rb") as media:
                 response = client.post(
                     "/v1/transcriptions",
-                    files={"file": (path.name, audio, "audio/wav")},
+                    files={"file": (path.name, media, content_type)},
                     data={"language": language},
                 )
             if response.status_code != 200:

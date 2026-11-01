@@ -1,4 +1,4 @@
-"""Audio container inspection implemented with PyAV."""
+"""Audio and video container inspection implemented with PyAV."""
 
 from pathlib import Path
 from typing import BinaryIO
@@ -9,6 +9,7 @@ from transcription_service.core.errors import NoAudioStreamError, UnsupportedMed
 from transcription_service.services.transcription import MediaMetadata
 
 AUDIO_EXTENSIONS = frozenset({".aac", ".flac", ".m4a", ".mp3", ".ogg", ".opus", ".wav"})
+VIDEO_EXTENSIONS = frozenset({".mkv", ".mov", ".mp4", ".webm"})
 AUDIO_CONTENT_TYPES = frozenset(
     {
         "application/ogg",
@@ -25,10 +26,21 @@ AUDIO_CONTENT_TYPES = frozenset(
         "audio/x-wav",
     }
 )
+VIDEO_CONTENT_TYPES = frozenset(
+    {
+        "application/x-matroska",
+        "video/mp4",
+        "video/quicktime",
+        "video/webm",
+        "video/x-matroska",
+    }
+)
+MEDIA_EXTENSIONS = AUDIO_EXTENSIONS | VIDEO_EXTENSIONS
+MEDIA_CONTENT_TYPES = AUDIO_CONTENT_TYPES | VIDEO_CONTENT_TYPES
 
 
-class PyAvAudioInspector:
-    """Validate phase-1 audio uploads and read inexpensive container metadata."""
+class PyAvMediaInspector:
+    """Validate supported media and inspect its first audio stream."""
 
     def inspect(
         self,
@@ -40,9 +52,7 @@ class PyAvAudioInspector:
         suffix = Path(filename or "").suffix.lower()
         normalized_content_type = (content_type or "").lower().split(";", maxsplit=1)[0]
 
-        if normalized_content_type.startswith("video/"):
-            raise UnsupportedMediaError
-        if suffix not in AUDIO_EXTENSIONS and normalized_content_type not in AUDIO_CONTENT_TYPES:
+        if suffix not in MEDIA_EXTENSIONS and normalized_content_type not in MEDIA_CONTENT_TYPES:
             raise UnsupportedMediaError
 
         try:
