@@ -17,6 +17,7 @@ htmlcov
 .DS_Store
 models
 uploads
+data
 tests
 docs
 *.wav

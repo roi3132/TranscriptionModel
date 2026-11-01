@@ -24,6 +24,7 @@ build/
 .cache/
 models/
 uploads/
+data/
 
 # User-provided media; integration fixtures are generated in memory.
 *.wav

@@ -13,7 +13,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install --yes --no-install-recommends ca-certificates libgomp1 \
+    && apt-get install --yes --no-install-recommends ca-certificates libgomp1 libseccomp2 \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10001 transcriber \
     && useradd --uid 10001 --gid transcriber --create-home --shell /usr/sbin/nologin transcriber \

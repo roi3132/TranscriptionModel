@@ -53,8 +53,10 @@ scaling remain later deployment options.
 
 ## Boundaries retained deliberately
 
-- Compose isolates each attempt in a terminable subprocess; this is a process boundary, not a
-  complete hostile-input OS sandbox with per-job seccomp/cgroup limits.
+- Each attempt now receives a private copy of the claimed media and a filtered environment.
+  Before media decoding, Linux applies Landlock/seccomp and macOS applies Seatbelt restrictions;
+  Compose also enforces CPU, memory, and PID limits. See `security-hardening.md` for the policy,
+  prerequisites, and verification commands.
 - Pending-job admission is serialized in PostgreSQL and therefore deployment-wide; each supervisor
   runs one child at a time. Scale supervisors explicitly according to available CPU/GPU memory.
 - Attempts reload process-local model state each time, trading latency for hard cancellation and
@@ -64,7 +66,8 @@ scaling remain later deployment options.
   storage instead of raising the current limits blindly.
 - The upload limiter is process-local and socket-address based. No authentication, user-owned
   history, reverse-proxy deployment, or accuracy guarantee for singing was added. Public ingress
-  still needs trusted forwarding, authenticated shared quotas, and upload/idle timeouts.
+  still needs trusted forwarding and authenticated shared quotas. Upload receive deadlines,
+  trusted-host checks, and browser-origin checks are now enforced in the application.
 - Docker Desktop on Apple Silicon built and ran the ARM64 image successfully. The Compose-configured
   container completed real inference and the named model volume survived container replacement.
 

@@ -512,7 +512,8 @@ class LocalMediaStore:
 
     def __init__(self, root: Path) -> None:
         self._root = root
-        self._root.mkdir(parents=True, exist_ok=True)
+        self._root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        self._root.chmod(0o700)
         self._write_lock = Lock()
 
     def save(
@@ -530,7 +531,8 @@ class LocalMediaStore:
         try:
             with self._write_lock:
                 current_bytes = self._stored_bytes()
-                with temporary.open("wb") as output:
+                descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                with os.fdopen(descriptor, "wb") as output:
                     while chunk := source.read(1024 * 1024):
                         size_bytes += len(chunk)
                         if current_bytes + size_bytes > max_total_bytes:

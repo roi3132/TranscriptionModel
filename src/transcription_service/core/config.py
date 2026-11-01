@@ -29,6 +29,10 @@ class Settings(BaseSettings):
     environment: Literal["development", "test", "production"] = "development"
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
     api_prefix: str = Field(default="/v1", pattern=r"^(?:/[A-Za-z0-9_-]+)*$")
+    allowed_hosts: list[str] = ["localhost", "127.0.0.1", "[::1]"]
+    allowed_origins: list[str] = []
+    upload_timeout_seconds: float = Field(default=120, gt=0)
+    attempt_memory_bytes: int = Field(default=16 * 1024**3, gt=0)
 
     model_id: str = "Systran/faster-whisper-small"
     model_revision: str = "536b0662742c02347bc0e980a01041f333bce120"

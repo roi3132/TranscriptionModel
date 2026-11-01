@@ -39,5 +39,8 @@ jobs:
       - name: Verify lockfile, formatting, lint, typing, and tests
         run: make check test
 
+      - name: Verify Linux inference sandbox restrictions
+        run: uv run --frozen python tests/sandbox_probe.py
+
       - name: Build the distributable wheel
         run: make package

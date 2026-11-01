@@ -1,6 +1,7 @@
 """Bound multipart parsing before FastAPI resolves upload dependencies."""
 
 from collections.abc import Callable, Coroutine
+from time import monotonic
 from typing import Any
 
 import anyio
@@ -44,10 +45,18 @@ class BoundedUploadRoute(APIRoute):
 
             received_bytes = 0
             exceeded = False
+            timed_out = False
+            deadline = monotonic() + settings.upload_timeout_seconds
 
             async def receive_limited() -> Message:
-                nonlocal received_bytes, exceeded
-                message = await request.receive()
+                nonlocal received_bytes, exceeded, timed_out
+                try:
+                    with anyio.fail_after(max(0, deadline - monotonic())):
+                        message = await request.receive()
+                except TimeoutError as exc:
+                    timed_out = True
+                    # Multipart exceptions close all partially spooled files.
+                    raise MultiPartException("Upload deadline exceeded.") from exc
                 if message["type"] == "http.request":
                     received_bytes += len(message.get("body", b""))
                     if received_bytes > body_limit:
@@ -67,6 +76,8 @@ class BoundedUploadRoute(APIRoute):
                 async with bounded_request.form(max_files=1, max_fields=3, max_part_size=4096):
                     return await handler(bounded_request)
             except HTTPException as exc:
+                if timed_out:
+                    raise HTTPException(408, "Upload deadline exceeded.") from exc
                 if exceeded:
                     raise UploadTooLargeError(settings.max_upload_bytes) from exc
                 raise

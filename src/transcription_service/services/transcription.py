@@ -166,5 +166,7 @@ class TranscriptionService:
         if path is None:
             return
         temporary = path.with_suffix(f"{path.suffix}.tmp")
-        temporary.write_bytes(checkpoint_adapter.dump_json(results))
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "wb") as output:
+            output.write(checkpoint_adapter.dump_json(results))
         os.replace(temporary, path)

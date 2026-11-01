@@ -1,6 +1,10 @@
 x-service-environment: &service-environment
   TRANSCRIPTION_ENVIRONMENT: production
   TRANSCRIPTION_LOG_LEVEL: ${TRANSCRIPTION_LOG_LEVEL:-INFO}
+  TRANSCRIPTION_ALLOWED_HOSTS: '${TRANSCRIPTION_ALLOWED_HOSTS:-["localhost","127.0.0.1","[::1]"]}'
+  TRANSCRIPTION_ALLOWED_ORIGINS: '${TRANSCRIPTION_ALLOWED_ORIGINS:-[]}'
+  TRANSCRIPTION_UPLOAD_TIMEOUT_SECONDS: ${TRANSCRIPTION_UPLOAD_TIMEOUT_SECONDS:-120}
+  TRANSCRIPTION_ATTEMPT_MEMORY_BYTES: ${TRANSCRIPTION_ATTEMPT_MEMORY_BYTES:-17179869184}
   TRANSCRIPTION_DATABASE_URL: postgresql://transcription:transcription@postgres:5432/transcription
   TRANSCRIPTION_REDIS_URL: redis://redis:6379/0
   TRANSCRIPTION_REDIS_QUEUE_NAME: transcription:jobs
@@ -36,7 +40,8 @@ x-service-environment: &service-environment
 x-service-security: &service-security
   read_only: true
   tmpfs:
-    - /tmp:rw,noexec,nosuid,size=256m
+    - /tmp:rw,noexec,nosuid,size=512m
+  pids_limit: 256
   cap_drop:
     - ALL
   security_opt:
@@ -47,6 +52,8 @@ services:
     build: .
     image: transcription-service:local
     init: true
+    mem_limit: 1g
+    cpus: 2
     ports:
       - "127.0.0.1:${TRANSCRIPTION_PORT:-8000}:8000"
     environment: *service-environment
@@ -62,6 +69,8 @@ services:
   worker:
     image: transcription-service:local
     init: true
+    mem_limit: ${TRANSCRIPTION_WORKER_MEMORY_LIMIT:-6g}
+    cpus: ${TRANSCRIPTION_WORKER_CPUS:-2}
     command: ["python", "-m", "transcription_service.worker"]
     environment: *service-environment
     volumes:

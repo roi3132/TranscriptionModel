@@ -25,7 +25,7 @@ def main() -> None:
     repository.ping()
     broker.ping()
 
-    runner = IsolatedJobRunner(settings.job_timeout_seconds)
+    runner = IsolatedJobRunner(settings.job_timeout_seconds, settings=settings)
     logger.info("worker_ready", attempt_timeout_seconds=settings.job_timeout_seconds)
     try:
         TranscriptionJobWorker(

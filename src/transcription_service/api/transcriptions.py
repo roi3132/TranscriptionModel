@@ -135,13 +135,13 @@ async def create_transcription(
         model_profile=model_profile,
         idempotency_key=_normalized_idempotency_key(idempotency_key),
     )
-    status_url = str(request.url_for("get_transcription_job", job_id=job.id))
+    status_url = request.url_for("get_transcription_job", job_id=job.id).path
     response.headers["Location"] = status_url
     return JobAcceptedResponse(
         id=job.id,
         status=job.status,
         status_url=status_url,
-        result_url=str(request.url_for("get_transcription_result", job_id=job.id)),
+        result_url=request.url_for("get_transcription_result", job_id=job.id).path,
     )
 
 
@@ -161,7 +161,7 @@ async def get_transcription_job(
         raise JobNotFoundError
     result_url = None
     if job.status is JobStatus.SUCCEEDED:
-        result_url = str(request.url_for("get_transcription_result", job_id=job.id))
+        result_url = request.url_for("get_transcription_result", job_id=job.id).path
     return JobStatusResponse(
         id=job.id,
         status=job.status,

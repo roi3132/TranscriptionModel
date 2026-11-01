@@ -28,14 +28,15 @@ class FasterWhisperTranscriber:
         self._supported_languages = frozenset(model.supported_languages)
 
     @classmethod
-    def from_settings(cls, settings: Settings) -> Self:
+    def from_settings(cls, settings: Settings, *, model_path: str | None = None) -> Self:
         """Download/load the configured model and construct the adapter."""
 
         model = WhisperModel(
-            settings.model_id,
+            model_path or settings.model_id,
             device=settings.device,
             compute_type=settings.compute_type,
             revision=settings.model_revision,
+            local_files_only=model_path is not None,
         )
         return cls(
             model,

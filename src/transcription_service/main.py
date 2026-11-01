@@ -11,6 +11,7 @@ import structlog
 from fastapi import FastAPI, Request, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import RequestResponseEndpoint
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from transcription_service import __version__
 from transcription_service.adapters.jobs import (
@@ -100,6 +101,10 @@ def create_app(
         lifespan=lifespan,
     )
     application.state.settings = resolved_settings
+    allowed_hosts = list(resolved_settings.allowed_hosts)
+    if resolved_settings.environment == "test":
+        allowed_hosts.append("testserver")
+    application.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts)
     application.state.runtime_status = runtime_status
     application.state.job_service = None
     application.state.upload_slots = anyio.CapacityLimiter(resolved_settings.max_concurrent_uploads)
@@ -120,6 +125,15 @@ def create_app(
 
     @application.middleware("http")
     async def request_context(request: Request, call_next: RequestResponseEndpoint) -> Response:
+        if request.method not in {"GET", "HEAD", "OPTIONS"}:
+            origin = request.headers.get("origin")
+            same_origin = f"{request.url.scheme}://{request.headers.get('host', '')}"
+            if origin is not None and (
+                origin == "null" or origin not in {same_origin, *resolved_settings.allowed_origins}
+            ):
+                return Response("Untrusted request origin.", status_code=403)
+            if request.headers.get("sec-fetch-site") == "cross-site":
+                return Response("Cross-site requests are not permitted.", status_code=403)
         request_id = _request_id(request.headers.get("X-Request-ID"))
         request.state.request_id = request_id
         structlog.contextvars.clear_contextvars()
