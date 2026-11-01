@@ -1,5 +1,9 @@
 # Security hardening
 
+For complete build/run/test steps, see [Execution Instructions](execution-instructions.md).
+Deployment assumptions and remaining scope limits are recorded in
+[Trade-offs & Assumptions](trade-offs-and-assumptions.md).
+
 ## Browser and HTTP boundary
 
 The API accepts localhost, 127.0.0.1, and IPv6 loopback Host headers by default.

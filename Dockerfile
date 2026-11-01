@@ -31,8 +31,8 @@ USER 10001:10001
 
 EXPOSE 8000
 
-# Readiness waits for model initialization, which can include a first-run download.
-HEALTHCHECK --interval=30s --timeout=5s --start-period=15m --retries=3 \
+# Readiness checks the API's dependencies and the worker heartbeat without loading a model.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
     CMD ["python", "-c", "from urllib.request import urlopen; urlopen('http://127.0.0.1:8000/health/ready', timeout=2)"]
 
 CMD ["uvicorn", "transcription_service.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]

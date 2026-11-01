@@ -1,0 +1,1130 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta
+      name="description"
+      content="Runtime architecture, source-code walkthrough, process boundaries, and verification map for the local transcription service."
+    >
+    <title>Transcription Service · Architecture Reference</title>
+    <style>
+      :root {
+        --ink: #17211c;
+        --muted: #667269;
+        --paper: #fbfaf6;
+        --panel: #ffffff;
+        --line: #dfe4dd;
+        --soft: #eef5f0;
+        --green: #246d51;
+        --green-dark: #174c38;
+        --blue: #315f88;
+        --blue-soft: #edf4fa;
+        --orange: #a65d24;
+        --orange-soft: #fff4e9;
+        --red: #a13e3e;
+        --red-soft: #fff0f0;
+        --code: #12231b;
+        --shadow: 0 18px 55px rgb(37 51 43 / 9%);
+        font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        color: var(--ink);
+        background: var(--paper);
+      }
+
+      * { box-sizing: border-box; }
+      html { scroll-behavior: smooth; }
+      body { margin: 0; line-height: 1.65; }
+      a { color: var(--green); }
+      code, pre { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; }
+      code { padding: 0.12rem 0.32rem; border-radius: 4px; background: #edf0eb; font-size: 0.88em; }
+      h1, h2, h3, h4 { line-height: 1.2; letter-spacing: -0.025em; }
+      h2 { margin-top: 0; font-size: clamp(1.55rem, 3vw, 2.25rem); }
+      h3 { margin: 0 0 0.65rem; font-size: 1.06rem; }
+      p { margin: 0.45rem 0 1rem; }
+      ul, ol { padding-left: 1.35rem; }
+      li + li { margin-top: 0.35rem; }
+
+      .page-header {
+        position: relative;
+        overflow: hidden;
+        padding: 4.75rem max(1.25rem, calc((100vw - 1180px) / 2)) 4rem;
+        color: #fff;
+        background:
+          radial-gradient(circle at 82% 18%, rgb(98 179 139 / 28%), transparent 31%),
+          linear-gradient(135deg, #102b20 0%, #1d513d 58%, #163b2d 100%);
+      }
+
+      .page-header::after {
+        position: absolute;
+        right: -4rem;
+        bottom: -8rem;
+        width: 27rem;
+        height: 27rem;
+        border: 1px solid rgb(255 255 255 / 12%);
+        border-radius: 50%;
+        content: "";
+      }
+
+      .eyebrow {
+        margin-bottom: 0.85rem;
+        color: #a7d8bf;
+        font-size: 0.78rem;
+        font-weight: 750;
+        letter-spacing: 0.13em;
+        text-transform: uppercase;
+      }
+
+      .page-header h1 {
+        max-width: 860px;
+        margin: 0;
+        font-size: clamp(2.4rem, 6vw, 4.9rem);
+        letter-spacing: -0.055em;
+      }
+
+      .lede {
+        max-width: 760px;
+        margin-top: 1.2rem;
+        color: #d5e6dc;
+        font-size: 1.05rem;
+      }
+
+      .header-facts {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.65rem;
+        margin-top: 1.6rem;
+      }
+
+      .header-facts span {
+        padding: 0.38rem 0.7rem;
+        border: 1px solid rgb(255 255 255 / 18%);
+        border-radius: 999px;
+        background: rgb(255 255 255 / 7%);
+        color: #eaf3ee;
+        font-size: 0.78rem;
+      }
+
+      .layout {
+        width: min(1180px, calc(100% - 2rem));
+        margin: 0 auto;
+      }
+
+      .toc {
+        position: sticky;
+        z-index: 20;
+        top: 0;
+        overflow-x: auto;
+        border-bottom: 1px solid var(--line);
+        background: rgb(251 250 246 / 94%);
+        backdrop-filter: blur(14px);
+      }
+
+      .toc nav {
+        width: min(1180px, calc(100% - 2rem));
+        display: flex;
+        gap: 0.35rem;
+        margin: 0 auto;
+        padding: 0.68rem 0;
+        white-space: nowrap;
+      }
+
+      .toc a {
+        padding: 0.4rem 0.62rem;
+        border-radius: 6px;
+        color: #4e5d54;
+        font-size: 0.76rem;
+        font-weight: 650;
+        text-decoration: none;
+      }
+
+      .toc a:hover { background: var(--soft); color: var(--green-dark); }
+
+      main { padding: 2.4rem 0 5rem; }
+      section { padding: 2.7rem 0; scroll-margin-top: 4.5rem; }
+      section + section { border-top: 1px solid var(--line); }
+      .section-intro { max-width: 800px; color: var(--muted); font-size: 1rem; }
+
+      .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
+      .grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .card {
+        min-width: 0;
+        padding: 1.1rem 1.15rem;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: var(--panel);
+        box-shadow: 0 5px 20px rgb(34 53 42 / 4%);
+      }
+      .card p:last-child, .card ul:last-child { margin-bottom: 0; }
+      .card-label {
+        color: var(--green);
+        font-size: 0.7rem;
+        font-weight: 800;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+      }
+
+      .callout {
+        margin: 1rem 0;
+        padding: 1rem 1.1rem;
+        border-left: 4px solid var(--green);
+        border-radius: 0 10px 10px 0;
+        background: var(--soft);
+      }
+      .callout.warning { border-color: var(--orange); background: var(--orange-soft); }
+      .callout.danger { border-color: var(--red); background: var(--red-soft); }
+
+      .topology {
+        display: grid;
+        grid-template-columns: 1fr auto 1.2fr auto 1fr auto 1.2fr;
+        gap: 0.65rem;
+        align-items: stretch;
+        margin-top: 1.5rem;
+      }
+
+      .node {
+        min-width: 0;
+        padding: 1rem;
+        border: 1px solid #cdd9d1;
+        border-radius: 11px;
+        background: #fff;
+        box-shadow: var(--shadow);
+      }
+      .node strong { display: block; color: var(--green-dark); }
+      .node small { display: block; margin-top: 0.35rem; color: var(--muted); line-height: 1.45; }
+      .node.storage { border-color: #c9d9e7; background: var(--blue-soft); }
+      .node.worker { border-color: #d8c8b4; background: #fffaf4; }
+      .arrow { display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 0.2rem; color: #799184; font-size: 1.5rem; }
+      .arrow small { font-size: 0.65rem; font-weight: 700; }
+      .reading-guide { margin: 1.2rem 0 1.6rem; }
+      .reading-guide a { font-weight: 650; }
+      .trace-table { min-width: 780px; }
+      .trace-table td:first-child { width: 3rem; color: var(--green); font-weight: 800; }
+      .trace-table code, .contract-table code { overflow-wrap: anywhere; }
+      .section-links { display: flex; flex-wrap: wrap; gap: 0.5rem 1.1rem; font-size: 0.88rem; }
+      .process-boundary { margin-top: 1.2rem; padding: 1.15rem; border: 2px dashed #c4cfc5; border-radius: 12px; }
+      .process-boundary > p { color: var(--muted); }
+      .support-row {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 0.65rem;
+        margin-top: 0.8rem;
+      }
+
+      .sequence { margin: 1.5rem 0 0; padding: 0; counter-reset: flow; list-style: none; }
+      .sequence li {
+        position: relative;
+        min-height: 3.2rem;
+        margin-left: 1.15rem;
+        padding: 0 0 1.2rem 2.2rem;
+        border-left: 2px solid #bdd0c4;
+        counter-increment: flow;
+      }
+      .sequence li:last-child { border-left-color: transparent; }
+      .sequence li::before {
+        position: absolute;
+        top: -0.15rem;
+        left: -1rem;
+        width: 1.9rem;
+        height: 1.9rem;
+        display: grid;
+        place-items: center;
+        border: 3px solid var(--paper);
+        border-radius: 50%;
+        background: var(--green);
+        color: #fff;
+        content: counter(flow);
+        font-size: 0.72rem;
+        font-weight: 800;
+      }
+
+      .state-flow {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.55rem;
+        align-items: center;
+        margin: 1.2rem 0;
+      }
+      .state {
+        padding: 0.55rem 0.8rem;
+        border: 1px solid #cfd9d2;
+        border-radius: 8px;
+        background: #fff;
+        font-family: "SFMono-Regular", Consolas, monospace;
+        font-size: 0.82rem;
+        font-weight: 700;
+      }
+      .state.good { border-color: #99c0aa; background: var(--soft); color: var(--green-dark); }
+      .state.bad { border-color: #e0aaaa; background: var(--red-soft); color: var(--red); }
+      .state.dim { color: var(--muted); }
+      .state-arrow { color: #85968c; }
+
+      .table-wrap { overflow-x: auto; margin-top: 1.2rem; border: 1px solid var(--line); border-radius: 10px; }
+      table { width: 100%; border-collapse: collapse; background: #fff; font-size: 0.86rem; }
+      th, td { padding: 0.72rem 0.78rem; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+      th { background: #f2f5f1; color: #3f5147; font-size: 0.72rem; letter-spacing: 0.04em; text-transform: uppercase; }
+      tr:last-child td { border-bottom: 0; }
+
+      pre {
+        overflow-x: auto;
+        margin: 1rem 0;
+        padding: 1rem 1.1rem;
+        border-radius: 10px;
+        background: var(--code);
+        color: #dcebe2;
+        font-size: 0.79rem;
+        line-height: 1.55;
+      }
+      pre code { padding: 0; background: transparent; color: inherit; font-size: inherit; }
+
+      .file-tree { color: #dcebe2; }
+      .file-tree b { color: #99d5b4; }
+      .muted { color: var(--muted); }
+      .pill {
+        display: inline-block;
+        margin: 0.12rem 0.2rem 0.12rem 0;
+        padding: 0.16rem 0.42rem;
+        border-radius: 999px;
+        background: #e9f1eb;
+        color: var(--green-dark);
+        font-size: 0.72rem;
+        font-weight: 700;
+      }
+
+      footer {
+        padding: 2rem 0 3rem;
+        border-top: 1px solid var(--line);
+        color: var(--muted);
+        font-size: 0.82rem;
+      }
+
+      @media (max-width: 900px) {
+        .grid.three { grid-template-columns: 1fr 1fr; }
+        .topology { grid-template-columns: 1fr; }
+        .topology > .arrow { font-size: 0; }
+        .topology > .arrow::after { content: "↓"; font-size: 1.5rem; }
+        .support-row { grid-template-columns: 1fr 1fr; }
+      }
+
+      @media (max-width: 620px) {
+        .page-header { padding-top: 3.3rem; }
+        .grid, .grid.three, .support-row { grid-template-columns: 1fr; }
+        section { padding: 2.1rem 0; }
+        th, td { min-width: 145px; }
+      }
+
+      @media print {
+        .toc { display: none; }
+        .page-header { padding: 2rem; color: #111; background: #fff; }
+        .page-header .lede, .page-header .eyebrow, .header-facts span { color: #333; }
+        .card, .node { box-shadow: none; break-inside: avoid; }
+        section { break-inside: avoid; }
+      }
+    </style>
+  </head>
+  <body>
+    <header class="page-header">
+      <p class="eyebrow">Architecture overview + code walkthrough</p>
+      <h1>From uploaded file to durable transcript</h1>
+      <p class="lede">
+        Follow one job through the API, queue, worker, sandboxed inference, and result download.
+        Each boundary is tied to the Python classes and methods that implement it.
+      </p>
+      <div class="header-facts" aria-label="Architecture summary">
+        <span>Asynchronous-only API</span>
+        <span>Local Docker Compose</span>
+        <span>At-least-once delivery</span>
+        <span>Hard process deadlines</span>
+        <span>16 kHz mono chunks</span>
+        <span>CPU inference baseline</span>
+      </div>
+    </header>
+
+    <div class="toc">
+      <nav aria-label="Document sections">
+        <a href="#overview">Overview</a>
+        <a href="#topology">Topology</a>
+        <a href="#walkthrough">One job in code</a>
+        <a href="#code-map">Source map</a>
+        <a href="#submission">Submission</a>
+        <a href="#execution">Execution</a>
+        <a href="#media">Media pipeline</a>
+        <a href="#state">State + recovery</a>
+        <a href="#data">Data ownership</a>
+        <a href="#api">API contract</a>
+        <a href="#operations">Operations</a>
+        <a href="#security">Security</a>
+        <a href="#scaling">Scaling</a>
+        <a href="#contracts">Data contracts</a>
+        <a href="#verification">Tests + change guide</a>
+      </nav>
+    </div>
+
+    <main class="layout">
+      <section id="overview">
+        <h2>Start here: three responsibilities</h2>
+        <p class="section-intro">
+          The API accepts files and serves job resources. PostgreSQL owns job state and results.
+          The worker executes decoding and inference outside HTTP. Redis connects submission to
+          execution by carrying job IDs, not media bytes or transcripts.
+        </p>
+
+        <div class="callout reading-guide">
+          <strong>How to read this document</strong>
+          <ol>
+            <li><strong>Understand the system:</strong> start with <a href="#topology">runtime topology</a> and <a href="#walkthrough">one job in code</a>.</li>
+            <li><strong>Navigate the repository:</strong> use the <a href="#code-map">source map</a> and <a href="#contracts">data contracts</a>; source filenames are clickable.</li>
+            <li><strong>Review a guarantee:</strong> follow <a href="#state">failure/recovery behavior</a> to the <a href="#verification">matching tests and their limits</a>.</li>
+          </ol>
+          <p class="section-links">
+            <a href="execution-instructions.md">Build, run, and test instructions</a>
+            <a href="trade-offs-and-assumptions.md">Trade-offs and assumptions</a>
+            <a href="../README.md">Repository README</a>
+          </p>
+        </div>
+
+        <div class="grid three">
+          <article class="card">
+            <span class="card-label">HTTP contract</span>
+            <h3>Short request, durable work</h3>
+            <p>
+              Accepted work returns <code>202</code> after upload persistence and submission policy.
+              Clients poll the job and fetch its result later; HTTP does not wait for inference.
+            </p>
+          </article>
+          <article class="card">
+            <span class="card-label">Source of truth</span>
+            <h3>PostgreSQL owns state</h3>
+            <p>
+              Redis transports job IDs, but PostgreSQL decides whether a job is queued, claimed,
+              retryable, complete, failed, or expired.
+            </p>
+          </article>
+          <article class="card">
+            <span class="card-label">Execution boundary</span>
+            <h3>One terminable child per attempt</h3>
+            <p>
+              The supervisor launches a fresh child process so a hard timeout can terminate native
+              FFmpeg/CTranslate2 work and reclaim its memory safely.
+            </p>
+          </article>
+          <article class="card">
+            <span class="card-label">Media behavior</span>
+            <h3>Normalize before inference</h3>
+            <p>
+              PyAV decodes the first audio stream, resamples it to signed 16-bit 16 kHz mono PCM,
+              and creates ordered WAV chunks.
+            </p>
+          </article>
+          <article class="card">
+            <span class="card-label">Reliability</span>
+            <h3>Leases, retries, checkpoints</h3>
+            <p>
+              Job attempts use renewable leases and exponential backoff. Completed chunks are
+              checkpointed atomically so a later attempt can resume.
+            </p>
+          </article>
+          <article class="card">
+            <span class="card-label">Deployment</span>
+            <h3>No hosted dependency required</h3>
+            <p>
+              API, worker, PostgreSQL, Redis, media, and model cache all run locally through Docker
+              Compose and named volumes.
+            </p>
+          </article>
+        </div>
+
+        <div class="callout">
+          <strong>Most important invariant:</strong> a new job's media and authoritative database row
+          are persisted before acceptance. The API's lifetime does not own the accepted work.
+          A reused completed job can already have its result stored and source media deleted.
+        </div>
+      </section>
+
+      <section id="topology">
+        <h2>Runtime topology: four services, two paths</h2>
+        <p class="section-intro">
+          Compose runs four services. The API and worker share only generated-key media storage and
+          infrastructure connections; model weights are mounted only into the worker.
+        </p>
+
+        <p><strong>Submission path:</strong> the API persists the upload and database row before publishing an ID. Arrows below show handoff, not a direct API-to-worker call.</p>
+        <div class="topology" role="group" aria-label="Submission handoff: client uploads to API, API pushes a job ID to Redis, worker pops the ID.">
+          <div class="node">
+            <strong>Browser / API client</strong>
+            <small>Multipart upload, status polling, result downloads, optional idempotency key.</small>
+          </div>
+          <div class="arrow" aria-hidden="true"><small>upload</small>→</div>
+          <div class="node">
+            <strong>FastAPI service</strong>
+            <small>Bounds uploads, rate-limits submissions, persists media, creates jobs, exposes health and OpenAPI.</small>
+          </div>
+          <div class="arrow" aria-hidden="true"><small>job ID</small>→</div>
+          <div class="node storage">
+            <strong>Redis broker</strong>
+            <small>LPUSH / BRPOP of IDs. AOF persistence; no audio, job record, or result body.</small>
+          </div>
+          <div class="arrow" aria-hidden="true"><small>dequeue</small>→</div>
+          <div class="node worker">
+            <strong>Worker supervisor</strong>
+            <small>Dequeues IDs, claims leases, launches child attempts, renews heartbeats, retries, and cleans up.</small>
+          </div>
+        </div>
+
+        <div class="support-row">
+          <div class="node storage">
+            <strong>PostgreSQL</strong>
+            <small>Authoritative job state, attempts, leases, options, cache identity, errors, results, expiry.</small>
+          </div>
+          <div class="node storage">
+            <strong>Private attempt workspace</strong>
+            <small>Supervisor copies the claimed media, manifest, and checkpoint into tmpfs; the child writes its outcome here.</small>
+          </div>
+          <div class="node storage">
+            <strong>Media volume</strong>
+            <small>Generated media keys and per-job chunk checkpoint sidecars.</small>
+          </div>
+          <div class="node storage">
+            <strong>Model cache volume</strong>
+            <small>Hugging Face files reused across disposable inference children.</small>
+          </div>
+        </div>
+
+        <div class="callout">
+          <strong>Read path:</strong> client → API → PostgreSQL → status/result response.
+          Polling and exporting a completed result do not contact the inference child or run the model.
+          The model cache is mounted only in the worker container; the private workspace is not the shared media volume.
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Process</th><th>Can access</th><th>Does not do</th></tr></thead>
+            <tbody>
+              <tr>
+                <td><strong>API</strong></td>
+                <td>PostgreSQL, Redis, shared media volume</td>
+                <td>Decode media, download models, run inference, wait for completion</td>
+              </tr>
+              <tr>
+                <td><strong>Supervisor</strong></td>
+                <td>PostgreSQL, Redis, shared media, model cache, private attempt files; manages child processes</td>
+                <td>Run native inference in its own long-lived process</td>
+              </tr>
+              <tr>
+                <td><strong>Preparation child</strong></td>
+                <td>Selected pinned model download, Hugging Face cache, restricted manifest</td>
+                <td>Decode user media or make job-state decisions</td>
+              </tr>
+              <tr>
+                <td><strong>Inference child</strong></td>
+                <td>Private manifest/media/checkpoint, selected cached model, runtime libraries</td>
+                <td>Query PostgreSQL/Redis, read other recordings, use network, or execute shell commands</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="walkthrough">
+        <h2>One job in code: the complete happy path</h2>
+        <p class="section-intro">
+          Example: an English WAV submitted with <code>audio_mode=speech</code> and
+          <code>model_profile=faster</code>. This trace assumes a new job with no cache hit.
+          The numbers describe logical order; a worker can claim the job before the API response reaches the client.
+        </p>
+        <div class="table-wrap">
+          <table class="trace-table">
+            <thead><tr><th>Step</th><th>Owner and exact code</th><th>What moves or changes</th></tr></thead>
+            <tbody>
+              <tr><td>1</td><td>API startup: <a href="../src/transcription_service/main.py"><code>create_app()</code> / lifespan</a></td><td>Construct repository, broker, media store, and submission service. Migrate/check infrastructure, attach dependencies to <code>app.state</code>, and register routes.</td></tr>
+              <tr><td>2</td><td>HTTP boundary: <a href="../src/transcription_service/api/uploads.py"><code>BoundedUploadRoute.get_route_handler()</code></a></td><td>Rate/admission checks, receive deadline, byte limits, and bounded multipart parsing run before the route's use case.</td></tr>
+              <tr><td>3</td><td>Route: <a href="../src/transcription_service/api/transcriptions.py"><code>create_transcription()</code></a></td><td>Validate exact file size and options; normalize language/idempotency input; call <code>JobSubmissionService.submit()</code>.</td></tr>
+              <tr><td>4</td><td>Submission: <a href="../src/transcription_service/services/jobs.py"><code>JobSubmissionService.submit()</code></a> → <a href="../src/transcription_service/adapters/jobs.py"><code>LocalMediaStore.save()</code></a></td><td>Write generated-key media, compute SHA-256, and construct the request/cache identity.</td></tr>
+              <tr><td>5</td><td>Persistence: <a href="../src/transcription_service/adapters/jobs.py"><code>PostgresJobRepository.create_or_reuse()</code></a></td><td>Under transaction advisory locks, apply idempotency/cache lookup and pending capacity. Commit a new <code>queued</code> row or return an existing job.</td></tr>
+              <tr><td>6</td><td>Handoff: <a href="../src/transcription_service/adapters/jobs.py"><code>RedisJobBroker.enqueue()</code></a>; route builds response</td><td>For a new job, push only the ID. Return <code>202</code>, <code>Location</code>, and origin-relative polling URLs.</td></tr>
+              <tr><td>7</td><td>Worker: <a href="../src/transcription_service/worker.py"><code>main()</code></a> → <a href="../src/transcription_service/services/jobs.py"><code>TranscriptionJobWorker.run_forever()</code> / <code>process()</code></a></td><td>Dequeue an ID; atomically claim the due row, increment attempts, and establish its lease. An ineligible/duplicate ID does no work.</td></tr>
+              <tr><td>8</td><td>Process runner: <a href="../src/transcription_service/services/execution.py"><code>IsolatedJobRunner.run()</code></a></td><td>Copy only this job's media/checkpoint into a private workspace. Write the manifest, prepare the pinned model, then spawn fresh inference under the same attempt deadline.</td></tr>
+              <tr><td>9</td><td>Inference entry: <a href="../src/transcription_service/attempt.py"><code>main()</code></a> → <a href="../src/transcription_service/core/sandbox.py"><code>restrict_attempt()</code></a></td><td>Read manifest, activate OS restrictions before importing native libraries, then construct the selected model and normalizer. No database lookup occurs here.</td></tr>
+              <tr><td>10</td><td>Pipeline: <a href="../src/transcription_service/services/transcription.py"><code>TranscriptionService.transcribe()</code></a></td><td>Normalize audio, resume completed chunks, infer missing chunks, checkpoint, offset timestamps, and assemble one result. <code>InlineJobRunner</code> converts it into a typed outcome.</td></tr>
+              <tr><td>11</td><td>Completion: runner reads outcome → <a href="../src/transcription_service/services/jobs.py"><code>TranscriptionJobWorker.process()</code></a></td><td>Supervisor commits <code>succeeded</code> + JSON result to PostgreSQL, then removes source media/checkpoint. The child never commits job state.</td></tr>
+              <tr><td>12</td><td>Read/export routes: <a href="../src/transcription_service/api/transcriptions.py"><code>get_transcription_job()</code> / <code>get_transcription_result()</code></a></td><td>Read the persisted job through <code>JobSubmissionService.get()</code>. Return JSON or call <a href="../src/transcription_service/services/exports.py"><code>render_result()</code></a> for TXT/SRT/VTT.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="muted">Follow the links in order to read the implementation. The <a href="#submission">submission</a>, <a href="#execution">process</a>, and <a href="#state">recovery</a> sections expand the branches omitted from this happy path.</p>
+      </section>
+
+      <section id="submission">
+        <h2>Submission: admission, persistence, and reuse</h2>
+        <p class="section-intro">
+          Upload admission is intentionally layered. Cheap transport rejection happens first;
+          authoritative persistence and deployment-wide queue admission happen afterward.
+        </p>
+
+        <ol class="sequence">
+          <li><strong>Rate admission.</strong> A process-local sliding window checks the socket client address. The default is 10 submissions per 60 seconds.</li>
+          <li><strong>Upload capacity.</strong> An AnyIO capacity limiter admits at most two upload parsers per API process by default.</li>
+          <li><strong>Transport bounds.</strong> Declared and streamed request bytes are capped at the file limit plus 64 KiB of multipart overhead.</li>
+          <li><strong>Multipart policy.</strong> Starlette accepts one file and three small form fields. Temporary parser files are closed on every path.</li>
+          <li><strong>Generated storage key.</strong> The API creates a UUID job ID and stores media as <code>{job_id}.media</code>; the client filename is metadata only.</li>
+          <li><strong>Hash while saving.</strong> <code>LocalMediaStore</code> writes once, counts bytes, checks the total media budget, and returns SHA-256 plus size.</li>
+          <li><strong>Identity calculation.</strong> The cache key covers media SHA-256, pinned model revision, language, audio mode, and model profile.</li>
+          <li><strong>Atomic repository decision.</strong> PostgreSQL creates the job or reuses an idempotent request, active duplicate, or unexpired cached result.</li>
+          <li><strong>Durable handoff.</strong> Only a newly created job ID is pushed to Redis. The API returns <code>202</code> with status and result URLs.</li>
+        </ol>
+
+        <div class="grid">
+          <article class="card">
+            <h3>Idempotency-Key behavior</h3>
+            <ul>
+              <li>Same key and same request identity: return the original job.</li>
+              <li>Same key and different identity: return <code>409 idempotency_conflict</code>.</li>
+              <li>Keys remain attached to job tombstones so behavior remains stable after expiry.</li>
+            </ul>
+          </article>
+          <article class="card">
+            <h3>Hash-cache behavior</h3>
+            <ul>
+              <li>Active equivalent work is reused instead of duplicated.</li>
+              <li>An unexpired successful equivalent result is returned immediately as the same job.</li>
+              <li>Ordinary hash reuse excludes failed and expired jobs. An explicitly reused idempotency key still resolves to its original job.</li>
+            </ul>
+          </article>
+        </div>
+
+        <div class="callout warning">
+          <strong>Why PostgreSQL is required here:</strong> pending-job admission, idempotency, and
+          hash reuse must be decided atomically across API replicas. An in-memory dictionary cannot
+          provide that guarantee after a restart or across processes.
+        </div>
+      </section>
+
+      <section id="execution">
+        <h2>Execution: supervisor, preparation, and inference</h2>
+        <p class="section-intro">
+          Redis delivery is deliberately lightweight. The supervisor treats a dequeued ID as a hint
+          and asks PostgreSQL whether it can atomically claim the job.
+        </p>
+
+        <div class="grid">
+          <article class="card">
+            <span class="card-label">Long-lived process</span>
+            <h3>Supervisor responsibilities</h3>
+            <ul>
+              <li>Publish a Redis readiness heartbeat.</li>
+              <li>Scan for due jobs that need redispatch.</li>
+              <li>Recover expired PostgreSQL leases.</li>
+              <li>Atomically transition one job from queued to running.</li>
+              <li>Create a private workspace with a manifest and claimed-media copy.</li>
+              <li>Run model preparation, then one fresh inference child.</li>
+              <li>Renew the job lease while the child is alive.</li>
+              <li>Apply retry, terminal failure, and retention policy.</li>
+            </ul>
+          </article>
+          <article class="card">
+            <span class="card-label">Disposable process</span>
+            <h3>Inference child responsibilities</h3>
+            <ul>
+              <li>Read the claimed job/configuration from the private manifest.</li>
+              <li>Activate the OS sandbox before native library imports.</li>
+              <li>Select exactly one configured model profile.</li>
+              <li>Load the selected prepared model offline, normalize private media, and infer chunks.</li>
+              <li>Write a small atomic JSON outcome file.</li>
+              <li>Exit so native memory is reclaimed.</li>
+            </ul>
+          </article>
+        </div>
+
+        <div class="process-boundary" role="group" aria-label="Processes within one worker container">
+          <h3>Inside the worker container</h3>
+          <p>One long-lived supervisor, with sequential disposable preparation and inference children. These are process boundaries, not extra Compose services.</p>
+          <pre><code>TranscriptionJobWorker.process(job_id)          ← supervisor owns DB/Redis
+  └─ IsolatedJobRunner.run(claimed_job, media_path, heartbeat)
+      ├─ private workspace: input.media + input.json + optional input.chunks.json
+      ├─ shared deadline begins (default 1,800 seconds)
+      ├─ preparation process:
+      │    python -m transcription_service.attempt --prepare INPUT_MANIFEST
+      │    └─ download/reuse pinned model → prepared.json → process exits
+      ├─ fresh inference process:
+      │    python -m transcription_service.attempt INPUT_MANIFEST RESULT_PATH
+      │    └─ sandbox → offline model → decode/chunks → atomic result.json → exit
+      ├─ supervisor monitors exit/deadline and refreshes heartbeat/lease
+      ├─ finally: copy valid checkpoint back after child/descendants stop
+      └─ return JobExecutionResult to worker lifecycle policy
+
+Success → commit result → delete shared media/checkpoint
+Retryable failure + budget → queued with backoff; retain checkpoint
+Terminal/final failure → failed with retention deadline
+Timeout → terminate process group; kill if still alive after five seconds</code></pre>
+        </div>
+
+        <p>The runner polls process exit/deadline at most one second apart; the worker throttles heartbeat/lease renewal to roughly one third of the heartbeat TTL. The deadline covers preparation plus inference, with termination grace after expiry.</p>
+
+        <div class="callout">
+          <strong>Why a process instead of an asyncio timeout?</strong> Cancelling a Python task does
+          not reliably stop native codec or CTranslate2 work. The supervisor can send terminate,
+          then kill after five seconds, providing a real wall-clock execution boundary.
+        </div>
+      </section>
+
+      <section id="media">
+        <h2>Media: normalization, chunks, and model output</h2>
+        <p class="section-intro">
+          The worker uses one pipeline for audio files and video containers. Video frames are not
+          decoded; PyAV selects the first audio stream.
+        </p>
+
+        <ol class="sequence">
+          <li><strong>Product allowlist.</strong> Extension or MIME type must match the supported audio/video policy.</li>
+          <li><strong>Authoritative decode.</strong> PyAV/FFmpeg opens the container and requires an audio stream.</li>
+          <li><strong>Explicit normalization.</strong> Frames are resampled to signed 16-bit, mono, 16,000 Hz PCM.</li>
+          <li><strong>Decoded duration bound.</strong> PCM byte count enforces the 15-minute default even when metadata is wrong or absent.</li>
+          <li><strong>Chunk materialization.</strong> PCM is written to ordered in-memory WAV chunks; the default chunk duration is five minutes.</li>
+          <li><strong>Silence contract.</strong> Exact zero PCM returns a successful empty result with <code>no_speech_detected</code> without running chunk inference. Model preparation/loading already happened earlier.</li>
+          <li><strong>Per-chunk retry.</strong> Each chunk may be attempted twice inside one job attempt by default.</li>
+          <li><strong>Atomic checkpoint.</strong> Completed chunk results are replaced atomically in the private workspace. The supervisor copies the valid checkpoint back to shared storage after the child stops.</li>
+          <li><strong>Resume.</strong> A later attempt normalizes the source again, then loads its checkpoint and skips inference for completed indices.</li>
+          <li><strong>Ordered assembly.</strong> Text is joined in chunk order and segment times are offset by each chunk start.</li>
+        </ol>
+
+        <div class="grid three">
+          <article class="card">
+            <h3>Speech mode</h3>
+            <p>Enables faster-whisper VAD filtering for normal spoken recordings and lower avoidable work.</p>
+          </article>
+          <article class="card">
+            <h3>Music mode</h3>
+            <p>Disables VAD and no-speech skipping so vocals over music are less likely to be discarded.</p>
+          </article>
+          <article class="card">
+            <h3>Model profiles</h3>
+            <p><code>faster</code> selects pinned Whisper small; <code>larger</code> selects pinned large-v3. Arbitrary model IDs are not accepted from clients.</p>
+          </article>
+        </div>
+
+        <div class="callout warning">
+          <strong>Current memory trade-off:</strong> normalization holds the bounded PCM stream in
+          worker memory before creating chunks. That is acceptable under the current 15-minute
+          limit; multi-hour media should use streaming durable chunks or object storage.
+        </div>
+      </section>
+
+      <section id="state">
+        <h2>State: retries, recovery, and guarantee boundaries</h2>
+        <p class="section-intro">
+          PostgreSQL transitions control eligibility. A conditional queued-to-running update
+          rejects ordinary duplicate deliveries; renewable leases allow abandoned work to recover.
+          Computation is at least once, not exactly once across every crash scenario.
+        </p>
+
+        <div class="state-flow" aria-label="Job state transitions">
+          <span class="state">queued</span><span class="state-arrow">→ claim →</span>
+          <span class="state">running</span><span class="state-arrow">→ success →</span>
+          <span class="state good">succeeded</span><span class="state-arrow">→ retention →</span>
+          <span class="state dim">expired</span>
+        </div>
+
+        <div class="state-flow">
+          <span class="state">running</span><span class="state-arrow">→ retryable + attempts left →</span>
+          <span class="state">queued</span><span class="state-arrow">→ after backoff → claim</span>
+        </div>
+        <div class="state-flow">
+          <span class="state">running</span><span class="state-arrow">→ terminal / attempts exhausted →</span>
+          <span class="state bad">failed</span><span class="state-arrow">→ retention →</span>
+          <span class="state dim">expired</span>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Mechanism</th><th>Default</th><th>Purpose</th></tr></thead>
+            <tbody>
+              <tr><td>Job attempts</td><td>3</td><td>Bound repeated full-process attempts.</td></tr>
+              <tr><td>Chunk attempts</td><td>2</td><td>Retry a local inference failure before failing the job attempt.</td></tr>
+              <tr><td>Initial retry backoff</td><td>5 seconds</td><td>Exponential delay: 5s, 10s, then attempt budget ends.</td></tr>
+              <tr><td>Attempt deadline</td><td>1,800 seconds</td><td>Terminate a child that exceeds its wall-clock budget.</td></tr>
+              <tr><td>Claim lease</td><td>30 seconds</td><td>Allow another worker to recover an abandoned running job.</td></tr>
+              <tr><td>Worker heartbeat TTL</td><td>15 seconds</td><td>Make API readiness fail when no live supervisor exists.</td></tr>
+              <tr><td>Dispatch scan</td><td>2 seconds</td><td>Re-enqueue due database rows if the original Redis push was lost.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3 style="margin-top:1.4rem">Recovery cases</h3>
+        <div class="grid">
+          <article class="card">
+            <h3>API stops after acceptance</h3>
+            <p>PostgreSQL, Redis AOF, and the media volume already hold the work. The independent worker continues.</p>
+          </article>
+          <article class="card">
+            <h3>Redis delivery is duplicated</h3>
+            <p>The second consumer cannot claim a row that is no longer eligible, so it performs no inference.</p>
+          </article>
+          <article class="card">
+            <h3>Worker dies while running</h3>
+            <p>The renewable lease expires. A supervisor recovery scan returns the job to queued or marks it failed when attempts are exhausted.</p>
+          </article>
+          <article class="card">
+            <h3>Commit succeeds but enqueue fails</h3>
+            <p>The persisted job is marked failed with <code>job_enqueue_failed</code> and retained for diagnosis; the API reports that the job infrastructure is unavailable.</p>
+          </article>
+        </div>
+        <div class="callout warning">
+          <strong>Two different enqueue failure cases:</strong> a caught enqueue error during submission marks
+          the persisted job <code>failed</code> and returns <code>503</code>. If the process dies after
+          commit but before it can enqueue or record that failure, a still-<code>queued</code> row can
+          be redispatched by the worker scan. PostgreSQL and Redis do not share one transaction.
+        </div>
+      </section>
+
+      <section id="data">
+        <h2>Storage: ownership and retention</h2>
+        <p class="section-intro">
+          Each storage system has one job. This prevents Redis from becoming an accidental database
+          and keeps media paths out of client control.
+        </p>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Data</th><th>Owner</th><th>Lifetime</th><th>Notes</th></tr></thead>
+            <tbody>
+              <tr><td>Job state and options</td><td>PostgreSQL</td><td>Tombstone retained</td><td>Includes status, attempts, lease, errors, identity, and expiry.</td></tr>
+              <tr><td>Completed result JSON</td><td>PostgreSQL</td><td>7 days by default</td><td>TXT/SRT/VTT are rendered on read; they are not stored separately.</td></tr>
+              <tr><td>Queued source media</td><td>Media volume</td><td>Until success/failure cleanup</td><td>Generated key; never the client filename.</td></tr>
+              <tr><td>Successful source media</td><td>Media volume</td><td>Deleted immediately</td><td>Checkpoint sidecars are deleted with it.</td></tr>
+              <tr><td>Failed source media</td><td>Media volume</td><td>24 hours by default</td><td>Retained locally for diagnosis, then expired.</td></tr>
+              <tr><td>Queue IDs</td><td>Redis AOF</td><td>Until dequeued</td><td>Safe to duplicate because PostgreSQL claims are authoritative.</td></tr>
+              <tr><td>Worker heartbeat</td><td>Redis</td><td>15-second TTL</td><td>Ephemeral readiness signal, not job state.</td></tr>
+              <tr><td>Model weights</td><td>Model-cache volume</td><td>Operator-managed</td><td>Reused across disposable attempt children.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <pre><code>transcription job (PostgreSQL)
+├── id / status / timestamps
+├── generated media_key
+├── original filename + content type (metadata only)
+├── language / audio_mode / model_profile / pinned revision
+├── media SHA-256 / cache key / optional idempotency key
+├── attempts / max_attempts / available_at / lease_expires_at
+├── result JSON or stable error code/message
+└── expires_at</code></pre>
+      </section>
+
+      <section id="api">
+        <h2>HTTP and browser: acceptance is not completion</h2>
+        <p class="section-intro">
+          The browser is a buildless same-origin client. It uses the same API as curl, stores only
+          active polling URLs and a display filename, and resumes polling after a reload.
+        </p>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Method</th><th>Path</th><th>Behavior</th></tr></thead>
+            <tbody>
+              <tr><td><code>POST</code></td><td><code>/v1/transcriptions</code></td><td>Persist and queue media; always returns <code>202</code> for accepted work.</td></tr>
+              <tr><td><code>GET</code></td><td><code>/v1/transcriptions/{id}</code></td><td>Return state, attempts, retry timing, errors, expiry, and result URL.</td></tr>
+              <tr><td><code>GET</code></td><td><code>/v1/transcriptions/{id}/result</code></td><td>Return JSON or render <code>?format=txt|srt|vtt</code>.</td></tr>
+              <tr><td><code>GET</code></td><td><code>/health/live</code></td><td>Prove the API process can answer.</td></tr>
+              <tr><td><code>GET</code></td><td><code>/health/ready</code></td><td>Check runtime state, PostgreSQL, Redis, and a live worker heartbeat.</td></tr>
+              <tr><td><code>GET</code></td><td><code>/docs</code></td><td>Generated OpenAPI explorer.</td></tr>
+              <tr><td><code>GET</code></td><td><code>/client-config</code></td><td>Provide the browser's upload URL and file limit.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="grid">
+          <article class="card">
+            <h3>Accepted response</h3>
+            <pre><code>{
+  "id": "…",
+  "status": "queued",
+  "status_url": "/v1/transcriptions/{id}",
+  "result_url": "/v1/transcriptions/{id}/result"
+}</code></pre>
+          </article>
+          <article class="card">
+            <h3>Stable error envelope</h3>
+            <pre><code>{
+  "error": {
+    "code": "unsupported_media",
+    "message": "…",
+    "request_id": "…"
+  }
+}</code></pre>
+          </article>
+        </div>
+
+        <p>Polling paths and <code>Location</code> are origin-relative. A reused job may already be running or succeeded. Request errors use the application envelope shown above; later decoding/inference errors are stored as job error fields. Host/origin middleware rejections can be plain text and early origin rejection precedes request-ID assignment.</p>
+
+        <p>
+          <span class="pill">JSON</span><span class="pill">TXT</span><span class="pill">SRT</span><span class="pill">VTT</span>
+          All representations originate from the same timestamped segment result. Exporting does not
+          run inference again.
+        </p>
+      </section>
+
+      <section id="operations">
+        <h2>Operations: health, logs, and limits</h2>
+        <div class="grid three">
+          <article class="card">
+            <h3>Liveness</h3>
+            <p>Answers whether the FastAPI process is running. It intentionally does not prove dependencies are usable.</p>
+          </article>
+          <article class="card">
+            <h3>Readiness</h3>
+            <p>Requires successful PostgreSQL and Redis checks plus a non-expired worker heartbeat. It never loads the model.</p>
+          </article>
+          <article class="card">
+            <h3>Structured logs</h3>
+            <p>JSON-style structured events include request IDs, routes, status, timing, job IDs, attempts, and stable error codes.</p>
+          </article>
+        </div>
+
+        <div class="callout">
+          <strong>Privacy boundary:</strong> request logs do not intentionally contain transcript
+          text, model output, uploaded bytes, or client filenames. Internal exceptions are logged;
+          sanitized stable messages are returned to clients.
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Guardrail</th><th>Default</th></tr></thead>
+            <tbody>
+              <tr><td>Maximum upload</td><td>100 MiB</td></tr>
+              <tr><td>Maximum decoded duration</td><td>15 minutes</td></tr>
+              <tr><td>Concurrent upload parsers per API process</td><td>2</td></tr>
+              <tr><td>Pending + running jobs</td><td>100 deployment-wide</td></tr>
+              <tr><td>Local media budget</td><td>5 GiB</td></tr>
+              <tr><td>Supervisor concurrency</td><td>1 child per worker container</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="security">
+        <h2>Security: container restrictions and the inference sandbox</h2>
+        <div class="grid">
+          <article class="card">
+            <h3>Implemented locally</h3>
+            <ul>
+              <li>Localhost-only published port.</li>
+              <li>Non-root application user.</li>
+              <li>Read-only root filesystems.</li>
+              <li>Bounded <code>noexec,nosuid</code> temporary filesystem.</li>
+              <li>All Linux capabilities dropped.</li>
+              <li><code>no-new-privileges</code>.</li>
+              <li>Generated media paths and content decoding.</li>
+              <li>File, duration, queue, storage, and rate bounds.</li>
+              <li>Pinned model revisions and locked dependencies.</li>
+              <li>Trusted Host and browser Origin checks; total upload receive deadline.</li>
+              <li>Private 0700 workspaces, 0600 files, and filtered child environments.</li>
+              <li>Linux Landlock/seccomp or macOS Seatbelt before native imports.</li>
+              <li>Inference network/command restrictions and per-process resource limits.</li>
+            </ul>
+          </article>
+          <article class="card">
+            <h3>Required before public exposure</h3>
+            <ul>
+              <li>Authentication and authorization.</li>
+              <li>Per-account or per-API-key shared quotas.</li>
+              <li>A trusted reverse proxy that overwrites forwarding headers.</li>
+              <li>Ingress upload and idle timeouts.</li>
+              <li>TLS and secret management.</li>
+              <li>Network isolation for PostgreSQL and Redis.</li>
+              <li>Malware/content scanning if the threat model requires it.</li>
+            </ul>
+          </article>
+        </div>
+
+        <div class="callout">
+          <strong>Two distinct protections:</strong> the process group supplies hard cancellation;
+          <a href="../src/transcription_service/core/sandbox.py"><code>restrict_attempt()</code></a>
+          supplies OS restrictions on files, network, and execution. The inference child reads only
+          its private files, selected cached weights, and runtime allowlist. Preparation retains
+          network access to acquire the pinned model and exits before inference starts. The child
+          is not a separate per-job container; container RAM/CPU limits apply to the whole worker.
+        </div>
+        <div class="callout warning">
+          Linux needs Landlock ABI 3 (kernel 6.2+) and libseccomp2; macOS uses Seatbelt.
+          Unsupported platforms or setup errors fail before decoding. This is a CPU policy;
+          GPU devices require a separately reviewed access policy. See
+          <a href="security-hardening.md">Security Hardening</a> for exact rules and probes.
+        </div>
+      </section>
+
+      <section id="scaling">
+        <h2>Scaling: what can change behind the current boundaries</h2>
+        <p class="section-intro">
+          The ports around repositories, broker, media, normalizer, and transcriber keep the HTTP
+          contract stable while deployment choices change.
+        </p>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Pressure</th><th>Current choice</th><th>Next step</th></tr></thead>
+            <tbody>
+              <tr><td>More API traffic</td><td>One API container, process-local rate limit</td><td>Replicate API; enforce shared authenticated quotas at ingress.</td></tr>
+              <tr><td>More inference throughput</td><td>One supervisor, one child at a time</td><td>Add worker replicas sized to CPU/GPU memory; PostgreSQL claims remain authoritative.</td></tr>
+              <tr><td>Multiple hosts</td><td>Shared local Docker volume</td><td>Implement an S3-compatible <code>MediaStore</code>.</td></tr>
+              <tr><td>Database operations</td><td>Local PostgreSQL volume</td><td>Use managed PostgreSQL with backups and connection pooling.</td></tr>
+              <tr><td>Queue operations</td><td>Local Redis AOF</td><td>Use managed Redis or a durable broker while preserving ID-only messages.</td></tr>
+              <tr><td>Very long media</td><td>15-minute bound and in-memory PCM</td><td>Stream normalized chunks to durable storage and schedule chunk tasks.</td></tr>
+              <tr><td>Warm-model latency</td><td>Fresh model process per attempt</td><td>Use a dedicated warm model service only with an external hard-cancellation boundary.</td></tr>
+              <tr><td>User isolation</td><td>Global hash cache</td><td>Add tenant identity to cache and idempotency scope.</td></tr>
+              <tr><td>Observability</td><td>Structured logs and health</td><td>Add Prometheus metrics and traces around queue latency, inference, and retries.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="callout warning">
+          <strong>Deliberate trade-off:</strong> loading a model in each attempt costs startup time,
+          but produces enforceable deadlines and clean native-memory reclamation. The shared model
+          cache removes repeated network downloads, not model initialization.
+        </div>
+      </section>
+
+      <section id="code-map">
+        <h2>Source map: entry points and responsibilities</h2>
+        <p class="section-intro">
+          The repository follows ports-and-adapters boundaries without introducing a framework for
+          them. Domain protocols define what the service needs; adapters contain infrastructure.
+        </p>
+
+        <pre class="file-tree"><code><b>src/transcription_service/</b>
+├── <b>main.py</b>                     FastAPI factory, lifespan, middleware, route wiring
+├── <b>worker.py</b>                   long-lived supervisor entry point
+├── <b>attempt.py</b>                  preparation mode + sandboxed inference entry point
+├── <b>domain.py</b>                   media/model result types and adapter protocols
+├── <b>jobs/domain.py</b>              job state, repository/broker/media/runner ports
+├── <b>api/</b>
+│   ├── transcriptions.py            submit, status, result endpoints
+│   ├── uploads.py                   transport bounds and upload admission
+│   ├── health.py                    live/ready contracts
+│   └── ui.py                        browser page and client configuration
+├── <b>services/</b>
+│   ├── jobs.py                      submission identity + worker lifecycle policy
+│   ├── execution.py                 inline test runner + isolated process runner
+│   ├── transcription.py             blocking normalization/chunk/inference pipeline
+│   └── exports.py                   TXT, SRT, and VTT rendering
+├── <b>adapters/</b>
+│   ├── jobs.py                      PostgreSQL, Redis, local media storage
+│   ├── media.py                     PyAV 16 kHz mono normalizer/chunker
+│   └── faster_whisper.py            CTranslate2-backed model adapter
+├── <b>schemas/</b>                   HTTP response models
+├── <b>core/</b>                      settings, errors, logging, rate limiting, status
+│   └── sandbox.py                   fail-closed OS restrictions and resource limits
+└── <b>static/</b>                    browser HTML, CSS, and polling/download JavaScript</code></pre>
+
+        <div class="grid three">
+          <article class="card">
+            <h3>Routes know HTTP</h3>
+            <p>Form fields, headers, status codes, URL generation, and response schemas stay in <code>api/</code>.</p>
+          </article>
+          <article class="card">
+            <h3>Services know policy</h3>
+            <p>Retries, cache identity, state transitions, chunk assembly, and retention stay in <code>services/</code>.</p>
+          </article>
+          <article class="card">
+            <h3>Adapters know vendors</h3>
+            <p>psycopg, Redis, PyAV, filesystem details, and faster-whisper stay in <code>adapters/</code>.</p>
+          </article>
+        </div>
+
+        <h3 style="margin-top:1.6rem">Where the objects are assembled</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Read this file</th><th>Important symbols</th><th>Responsibility / boundary</th></tr></thead>
+            <tbody>
+              <tr><td><a href="../src/transcription_service/main.py"><code>main.py</code></a></td><td><code>create_app()</code>, lifespan</td><td>API composition root. Creates adapters and <code>JobSubmissionService</code>, attaches state, installs middleware/routes. Lifespan performs schema setup and infrastructure checks.</td></tr>
+              <tr><td><a href="../src/transcription_service/worker.py"><code>worker.py</code></a></td><td><code>main()</code></td><td>Worker composition root. Builds repository/broker/media adapters plus <code>IsolatedJobRunner</code>; starts the supervisor loop.</td></tr>
+              <tr><td><a href="../src/transcription_service/attempt.py"><code>attempt.py</code></a></td><td><code>main()</code>, <code>_write_result()</code></td><td>Child composition root. Preparation selects/downloads a pinned model. Inference restricts the process, constructs model/normalizer/pipeline, and writes an outcome.</td></tr>
+              <tr><td><a href="../src/transcription_service/services/jobs.py"><code>services/jobs.py</code></a></td><td><code>JobSubmissionService</code>, <code>TranscriptionJobWorker</code></td><td>Two roles in one file: API submission/reuse policy and supervisor lifecycle policy. <code>maintain()</code> handles dispatch/recovery/expiry between attempts; the callback renews liveness during an attempt.</td></tr>
+              <tr><td><a href="../src/transcription_service/services/execution.py"><code>services/execution.py</code></a></td><td><code>IsolatedJobRunner</code>, <code>InlineJobRunner</code></td><td>Process management and outcome conversion. Inline runner is used by tests and inside the already-sandboxed inference child; production supervisor uses the isolated runner.</td></tr>
+              <tr><td><a href="../src/transcription_service/services/transcription.py"><code>services/transcription.py</code></a></td><td><code>transcribe()</code>, <code>_load_checkpoint()</code>, <code>_save_checkpoint()</code>, <code>_assemble()</code></td><td>Blocking media use case: normalization, silence handling, chunk retry/resume, ordered assembly. It receives model/normalizer objects rather than constructing them.</td></tr>
+              <tr><td><a href="../src/transcription_service/adapters/jobs.py"><code>adapters/jobs.py</code></a></td><td><code>PostgresJobRepository</code>, <code>RedisJobBroker</code>, <code>LocalMediaStore</code></td><td>SQL/migration and locking, Redis operations, private filesystem persistence. Schema/index changes start here; this is not an ORM-backed model layer.</td></tr>
+              <tr><td><a href="../src/transcription_service/adapters/media.py"><code>adapters/media.py</code></a> / <a href="../src/transcription_service/adapters/faster_whisper.py"><code>adapters/faster_whisper.py</code></a></td><td><code>PyAvMediaNormalizer</code>, <code>FasterWhisperTranscriber</code></td><td>Vendor-specific decode/resample and model calls. The transcriber eagerly consumes the model's lazy segments and returns domain values.</td></tr>
+              <tr><td><a href="../src/transcription_service/core/sandbox.py"><code>core/sandbox.py</code></a></td><td><code>restrict_attempt()</code></td><td>Platform-specific access policy and resource limits. Must execute before importing native inference/decoder libraries in the child.</td></tr>
+              <tr><td><a href="../src/transcription_service/static/assets/app.js"><code>static/assets/app.js</code></a> / <a href="../src/transcription_service/api/ui.py"><code>api/ui.py</code></a></td><td>Browser polling/reload recovery; <code>client_configuration()</code></td><td>Client experience and discovered endpoint/configuration. Server-side validation remains authoritative.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="muted">These are practical responsibility boundaries, not a claim of perfectly isolated layers. For example, <code>services/jobs.py</code> imports the <code>new_job()</code> factory from the adapter module, and execution maps results through HTTP response schemas.</p>
+      </section>
+
+      <section id="contracts">
+        <h2>Data contracts: what crosses each boundary</h2>
+        <p class="section-intro">
+          Domain dataclasses represent internal values; Pydantic schemas represent HTTP data.
+          Protocols describe replaceable operations. None of these objects is a live database
+          session or a shared in-memory model instance across processes.
+        </p>
+        <pre><code>HTTP form → route → JobSubmissionService → JobRepository / JobBroker / MediaStore
+                                            ↑ concrete objects wired by main.py
+
+Worker policy → JobRunner → private manifest + files → child process
+                 ↑ wired by worker.py                  ↓ wired by attempt.py
+                                        TranscriptionService
+                                          ├─ MediaNormalizer → NormalizedMedia
+                                          └─ Transcriber → TranscriptionResult
+
+CompletedTranscription → response-shaped result → JobExecutionResult → result.json
+  → supervisor → PostgreSQL JSONB → result route → JSON / render_result()</code></pre>
+        <div class="table-wrap">
+          <table class="contract-table">
+            <thead><tr><th>Contract / location</th><th>Contains or promises</th><th>Used by</th></tr></thead>
+            <tbody>
+              <tr><td><a href="../src/transcription_service/jobs/domain.py"><code>TranscriptionJob</code></a></td><td>Frozen snapshot of identity, options, status, attempts, lease, expiry, result/error fields.</td><td>Repository returns a snapshot; supervisor passes the claimed snapshot in the manifest. It is not automatically refreshed in the child.</td></tr>
+              <tr><td><a href="../src/transcription_service/jobs/domain.py"><code>SubmissionDecision</code></a></td><td>Selected job plus created/idempotent/active-duplicate/cached-result reason.</td><td>Submission policy decides whether to discard the new media copy, reject key conflict, or enqueue a new job.</td></tr>
+              <tr><td><a href="../src/transcription_service/jobs/domain.py"><code>StoredMedia</code></a></td><td>Saved byte count and SHA-256, not the audio body itself.</td><td>Submission constructs cache identity after filesystem persistence.</td></tr>
+              <tr><td><a href="../src/transcription_service/domain.py"><code>NormalizedMedia</code></a> / <code>NormalizedChunk</code></td><td>In-memory WAV streams, chunk index/start offset, decoded duration, exact-silence flag.</td><td>Pipeline owns the streams and closes them in its <code>finally</code> block.</td></tr>
+              <tr><td><a href="../src/transcription_service/domain.py"><code>TranscriptionResult</code></a> / <code>CompletedTranscription</code></td><td>Text, language probability, segment times; completed value adds processing time, model ID, warnings.</td><td>Model/chunk assembly returns domain values before serialization.</td></tr>
+              <tr><td><a href="../src/transcription_service/jobs/domain.py"><code>JobExecutionResult</code></a></td><td>Successful result dictionary or safe error code/message plus retryable flag.</td><td>Runner/supervisor boundary; the supervisor, not the child, decides persisted lifecycle transitions.</td></tr>
+              <tr><td><a href="../src/transcription_service/schemas/jobs.py"><code>JobAcceptedResponse</code></a>, <code>JobStatusResponse</code>, <code>JobResultResponse</code></td><td>Validated public response shapes. Result schema extends <code>TranscriptionResponse</code> with <code>job_id</code>.</td><td>API routes and exports. JSON/TXT/SRT/VTT share the same completed-result model.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <h3 style="margin-top:1.6rem">The replaceable interfaces</h3>
+        <p><a href="../src/transcription_service/jobs/domain.py"><code>JobRepository</code>, <code>JobBroker</code>, <code>MediaStore</code>, and <code>JobRunner</code></a> define infrastructure/execution operations. <a href="../src/transcription_service/domain.py"><code>MediaNormalizer</code> and <code>Transcriber</code></a> define the blocking media/model operations. Production supplies PostgreSQL, Redis, filesystem, process, PyAV, and faster-whisper implementations; tests can inject deterministic replacements.</p>
+      </section>
+
+      <section id="verification">
+        <h2>Verification and a guide to changing the code</h2>
+        <p class="section-intro">
+          A useful architecture claim should point to both its implementation and its evidence.
+          These are the first tests to read or update; normal API tests use in-memory job adapters
+          and fake inference, so they do not by themselves prove real SQL, broker durability, or model accuracy.
+        </p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Concern or intended change</th><th>Start in the implementation</th><th>Evidence / relevant tests</th></tr></thead>
+            <tbody>
+              <tr><td>Submission contract, option validation, polling</td><td><a href="../src/transcription_service/api/transcriptions.py">Routes</a>, <a href="../src/transcription_service/schemas/jobs.py">job schemas</a>, submission service</td><td><a href="../tests/integration/test_transcriptions.py">test_transcriptions.py</a>, <a href="../tests/integration/test_async_jobs.py">test_async_jobs.py</a></td></tr>
+              <tr><td>Early byte/admission limits and receive cleanup</td><td><a href="../src/transcription_service/api/uploads.py">BoundedUploadRoute</a>, <a href="../src/transcription_service/core/config.py">Settings</a>, Compose resources</td><td><a href="../tests/integration/test_upload_limits.py">test_upload_limits.py</a>, slow-body checks in <a href="../tests/integration/test_security.py">test_security.py</a></td></tr>
+              <tr><td>Retries, key/hash reuse, leases, expiry, timeout</td><td><a href="../src/transcription_service/services/jobs.py">Lifecycle policy</a>, <a href="../src/transcription_service/services/execution.py">process runner</a>, repository SQL</td><td><a href="../tests/integration/test_job_reliability.py">test_job_reliability.py</a> checks policy with fakes and hard timeout with a controlled child. Real repository behavior also needs Compose checks.</td></tr>
+              <tr><td>Media formats, track selection, normalization</td><td><a href="../src/transcription_service/adapters/media.py">PyAvMediaNormalizer</a></td><td><a href="../tests/unit/test_media.py">test_media.py</a> exercises real PyAV with generated containers.</td></tr>
+              <tr><td>Chunk retries, resume, timestamp assembly</td><td><a href="../src/transcription_service/services/transcription.py">TranscriptionService</a></td><td><a href="../tests/unit/test_transcription_service.py">test_transcription_service.py</a> injects controlled chunks/failures.</td></tr>
+              <tr><td>Model parameters or model-version upgrades</td><td><a href="../src/transcription_service/adapters/faster_whisper.py">Model adapter</a>, settings, <a href="../pyproject.toml">dependency bounds</a>, lockfile</td><td><a href="../tests/unit/test_faster_whisper.py">test_faster_whisper.py</a> checks mapping/options; <a href="../scripts/smoke_media.py">smoke_media.py</a> exercises actual inference through HTTP.</td></tr>
+              <tr><td>Sandbox, file privacy, Host/Origin rules</td><td><a href="../src/transcription_service/core/sandbox.py">OS policy</a>, main middleware, runner private files</td><td><a href="../tests/integration/test_security.py">test_security.py</a> plus <a href="../tests/sandbox_probe.py">sandbox_probe.py</a> on the target OS. CI runs the Linux probe.</td></tr>
+              <tr><td>Exports or browser behavior</td><td><a href="../src/transcription_service/services/exports.py">render_result()</a>, <a href="../src/transcription_service/static/assets/app.js">app.js</a>, UI route</td><td><a href="../tests/unit/test_exports.py">test_exports.py</a>, <a href="../tests/integration/test_ui.py">test_ui.py</a>. Page/config checks are not a full browser end-to-end test.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="callout">
+          <strong>Three checks, three meanings:</strong> fast tests validate deterministic behavior;
+          Compose readiness validates infrastructure/heartbeat; a real-model smoke validates native
+          loading and a completed sample. None is a transcription-accuracy benchmark. Use
+          <a href="execution-instructions.md#test-the-solution">Execution Instructions</a> for the commands
+          and <a href="trade-offs-and-assumptions.md">Trade-offs &amp; Assumptions</a> for known limits.
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <div class="layout">
+        <strong>Transcription Service Architecture Reference</strong><br>
+        Describes the current asynchronous implementation, including model preparation and the inference sandbox.
+        Update the source walkthrough and verification map when a state owner, process boundary,
+        public contract, or reliability policy changes.
+      </div>
+    </footer>
+  </body>
+</html>

@@ -1,5 +1,9 @@
 # Code and architecture review
 
+For current tester guidance, use [Execution Instructions](execution-instructions.md) and
+[Trade-offs & Assumptions](trade-offs-and-assumptions.md). The phase-by-phase evidence below is
+historical and can have different test counts from the current suite.
+
 The service now has one durable asynchronous contract. FastAPI accepts and persists uploads but
 never loads Whisper or blocks HTTP on inference. An independent worker owns PyAV, faster-whisper,
 and the two pinned model profiles. PostgreSQL stores job state/results, Redis provides durable
@@ -74,12 +78,13 @@ scaling remain later deployment options.
 ## Verification
 
 Run `make check test package` for formatting, lint, typing, fast regression tests, and wheel build.
-Use the README's explicit real-model smoke command against the Compose stack, and `make docker-smoke`
+Use the [execution guide's real-model smoke command](execution-instructions.md#run-real-model-smoke-tests)
+against the Compose stack, and `make docker-smoke`
 for the basic container check. Fast CI must continue to avoid downloading model weights.
 
-Phase 8 passes Ruff formatting/lint, strict mypy, JavaScript syntax checking, 70 focused tests with
-82% coverage, wheel packaging, and a fresh Docker image build. The rebuilt four-service stack
-reached API readiness on port 8002.
+The latest local fast-suite run passed 78 tests with 78% coverage, Ruff formatting/lint, strict
+mypy, JavaScript syntax checking, and wheel packaging. Historical Phase 8 verification below used
+70 focused tests with 82% coverage and a rebuilt four-service stack on local port 8002.
 
 Phase 5 verification on 1 November 2026 produced the following evidence:
 
