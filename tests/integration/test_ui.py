@@ -2,6 +2,10 @@
 
 from fastapi.testclient import TestClient
 
+from tests.conftest import FakeTranscriber, make_wav_bytes
+from transcription_service.core.config import Settings
+from transcription_service.main import create_app
+
 
 def test_root_serves_accessible_transcription_interface(client: TestClient) -> None:
     response = client.get("/")
@@ -28,7 +32,23 @@ def test_static_assets_are_served_same_origin(client: TestClient) -> None:
     assert "@media (max-width: 560px)" in stylesheet.text
     assert script.status_code == 200
     assert script.headers["content-type"].startswith("text/javascript")
-    assert 'fetch("/v1/transcriptions"' in script.text
     assert "formData" in script.text
     assert "navigator.clipboard.writeText" in script.text
     assert "URL.createObjectURL" in script.text
+
+
+def test_browser_configuration_follows_custom_api_prefix(settings: Settings) -> None:
+    settings = settings.model_copy(update={"api_prefix": "/api/v2"})
+    with TestClient(
+        create_app(settings, transcriber_factory=lambda _: FakeTranscriber())
+    ) as client:
+        config = client.get("/client-config").json()
+        assert config == {
+            "transcription_url": "/api/v2/transcriptions",
+            "max_upload_bytes": settings.max_upload_bytes,
+        }
+        response = client.post(
+            config["transcription_url"],
+            files={"file": ("sample.wav", make_wav_bytes(), "audio/wav")},
+        )
+        assert response.status_code == 200

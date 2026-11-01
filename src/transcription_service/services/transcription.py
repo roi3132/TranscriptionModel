@@ -1,13 +1,9 @@
-"""Model-independent transcription types, ports, and use case."""
+"""Upload validation and bounded execution of the transcription pipeline."""
 
 import asyncio
-from collections.abc import Callable
-from dataclasses import dataclass
-from enum import StrEnum
 from functools import partial
-from threading import Lock
 from time import perf_counter
-from typing import BinaryIO, Protocol, runtime_checkable
+from typing import BinaryIO
 
 import anyio
 import structlog
@@ -20,106 +16,23 @@ from transcription_service.core.errors import (
     MediaTooLongError,
     ModelBusyError,
     ModelInferenceError,
-    ModelNotReadyError,
     UploadTooLargeError,
 )
+from transcription_service.domain import (
+    AudioMode,
+    CompletedTranscription,
+    MediaInspector,
+    ModelProfile,
+    Transcriber,
+    TranscriberFactory,
+)
+from transcription_service.services.models import ModelRegistry
 
 logger = structlog.get_logger(__name__)
 
 
-class AudioMode(StrEnum):
-    """User-facing processing profile for the uploaded audio track."""
-
-    SPEECH = "speech"
-    MUSIC = "music"
-
-
-class ModelProfile(StrEnum):
-    """Allowlisted model choices independent of audio processing mode."""
-
-    FASTER = "faster"
-    LARGER = "larger"
-
-
-@dataclass(frozen=True, slots=True)
-class MediaMetadata:
-    """Metadata read from a media container before inference."""
-
-    duration_seconds: float | None
-    format_name: str
-
-
-@dataclass(frozen=True, slots=True)
-class SegmentResult:
-    """One timestamped model result."""
-
-    start: float
-    end: float
-    text: str
-
-
-@dataclass(frozen=True, slots=True)
-class TranscriptionResult:
-    """Model output before it is mapped to the public API schema."""
-
-    text: str
-    language: str
-    language_probability: float
-    duration_seconds: float
-    segments: tuple[SegmentResult, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class CompletedTranscription:
-    """A model result enriched with application execution metadata."""
-
-    result: TranscriptionResult
-    processing_time_seconds: float
-    model_id: str
-
-
-@runtime_checkable
-class Transcriber(Protocol):
-    """Blocking model inference port."""
-
-    @property
-    def model_id(self) -> str:
-        """Public identifier of the configured model."""
-        ...
-
-    @property
-    def supported_languages(self) -> frozenset[str]:
-        """Language codes accepted by the configured model."""
-        ...
-
-    def transcribe(
-        self,
-        media: BinaryIO,
-        *,
-        language: str | None,
-        audio_mode: AudioMode,
-    ) -> TranscriptionResult:
-        """Transcribe the current media stream position into timestamped text."""
-        ...
-
-
-@runtime_checkable
-class MediaInspector(Protocol):
-    """Port for validating a container and reading its audio metadata."""
-
-    def inspect(
-        self,
-        media: BinaryIO,
-        *,
-        filename: str | None,
-        content_type: str | None,
-    ) -> MediaMetadata:
-        """Inspect media without taking ownership of the stream."""
-        ...
-
-
 class TranscriptionService:
-    """Apply upload guardrails and coordinate bounded model inference."""
+    """Share one capacity limit across decoding, model loading, and inference."""
 
     def __init__(
         self,
@@ -127,15 +40,12 @@ class TranscriptionService:
         media_inspector: MediaInspector,
         settings: Settings,
         *,
-        transcriber_factory: Callable[[Settings], Transcriber] | None = None,
+        transcriber_factory: TranscriberFactory | None = None,
     ) -> None:
-        self._transcriber = transcriber
+        self._models = ModelRegistry(transcriber, settings, transcriber_factory)
         self._media_inspector = media_inspector
         self._settings = settings
         self._inference_slots = asyncio.Semaphore(settings.max_concurrent_transcriptions)
-        self._transcriber_factory = transcriber_factory
-        self._larger_transcriber: Transcriber | None = None
-        self._model_load_lock = Lock()
 
     async def transcribe(
         self,
@@ -148,20 +58,10 @@ class TranscriptionService:
         audio_mode: AudioMode,
         model_profile: ModelProfile = ModelProfile.FASTER,
     ) -> CompletedTranscription:
-        """Validate an upload, wait for capacity, and execute inference off-loop."""
-
-        self._validate_size(size_bytes)
-        self._validate_language(language)
-
-        metadata = await anyio.to_thread.run_sync(
-            partial(
-                self._media_inspector.inspect,
-                media,
-                filename=filename,
-                content_type=content_type,
-            )
-        )
-        self._validate_duration(metadata.duration_seconds)
+        if size_bytes <= 0:
+            raise EmptyUploadError
+        if size_bytes > self._settings.max_upload_bytes:
+            raise UploadTooLargeError(self._settings.max_upload_bytes)
 
         try:
             await asyncio.wait_for(
@@ -171,79 +71,71 @@ class TranscriptionService:
         except TimeoutError as exc:
             raise ModelBusyError(self._settings.inference_queue_timeout_seconds) from exc
 
+        try:
+            # Cancellation must not close a stream or release capacity while its thread uses it.
+            worker = asyncio.create_task(
+                anyio.to_thread.run_sync(
+                    partial(
+                        self._transcribe_blocking,
+                        media,
+                        filename=filename,
+                        content_type=content_type,
+                        language=language,
+                        audio_mode=audio_mode,
+                        model_profile=model_profile,
+                    )
+                )
+            )
+            try:
+                return await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                with anyio.CancelScope(shield=True):
+                    while not worker.done():
+                        try:
+                            await asyncio.shield(worker)
+                        except asyncio.CancelledError:
+                            continue
+                        except Exception:
+                            break  # The blocking pipeline logs and sanitizes its own failures.
+                    if not worker.cancelled():
+                        worker.exception()  # Retrieve failures even when the caller has gone away.
+                raise
+        finally:
+            self._inference_slots.release()
+
+    def _transcribe_blocking(
+        self,
+        media: BinaryIO,
+        *,
+        filename: str | None,
+        content_type: str | None,
+        language: str | None,
+        audio_mode: AudioMode,
+        model_profile: ModelProfile,
+    ) -> CompletedTranscription:
         started_at = perf_counter()
         try:
+            metadata = self._media_inspector.inspect(
+                media, filename=filename, content_type=content_type
+            )
+            self._validate_duration(metadata.duration_seconds)
+            transcriber = self._models.get(model_profile)
+            if language is not None and language not in transcriber.supported_languages:
+                raise InvalidLanguageError(language)
+
             media.seek(0)
-            result, model_id = await anyio.to_thread.run_sync(
-                partial(
-                    self._run_inference,
-                    media,
-                    language=language,
-                    audio_mode=audio_mode,
-                    model_profile=model_profile,
-                )
+            result = transcriber.transcribe(media, language=language, audio_mode=audio_mode)
+            self._validate_duration(result.duration_seconds)
+            return CompletedTranscription(
+                result=result,
+                processing_time_seconds=perf_counter() - started_at,
+                model_id=transcriber.model_id,
             )
         except ApplicationError:
             raise
         except Exception as exc:
-            await logger.aexception(
-                "model_inference_failed",
-                model_profile=model_profile.value,
-                media_format=metadata.format_name,
-            )
+            logger.exception("transcription_pipeline_failed", model_profile=model_profile.value)
             raise ModelInferenceError from exc
-        finally:
-            self._inference_slots.release()
-
-        self._validate_duration(result.duration_seconds)
-        return CompletedTranscription(
-            result=result,
-            processing_time_seconds=perf_counter() - started_at,
-            model_id=model_id,
-        )
-
-    def _run_inference(
-        self,
-        media: BinaryIO,
-        *,
-        language: str | None,
-        audio_mode: AudioMode,
-        model_profile: ModelProfile,
-    ) -> tuple[TranscriptionResult, str]:
-        """Load and run the selected model within the existing inference slot."""
-
-        transcriber = self._transcriber
-        if model_profile is ModelProfile.LARGER:
-            with self._model_load_lock:
-                if self._larger_transcriber is None:
-                    if self._transcriber_factory is None:
-                        raise ModelNotReadyError
-                    settings = self._settings.model_copy(
-                        update={
-                            "model_id": self._settings.larger_model_id,
-                            "model_revision": self._settings.larger_model_revision,
-                        }
-                    )
-                    logger.info("larger_model_loading", model=settings.model_id)
-                    self._larger_transcriber = self._transcriber_factory(settings)
-                    logger.info("larger_model_ready", model=settings.model_id)
-                transcriber = self._larger_transcriber
-        if language is not None and language not in transcriber.supported_languages:
-            raise InvalidLanguageError(language)
-        return (
-            transcriber.transcribe(media, language=language, audio_mode=audio_mode),
-            transcriber.model_id,
-        )
-
-    def _validate_size(self, size_bytes: int) -> None:
-        if size_bytes <= 0:
-            raise EmptyUploadError
-        if size_bytes > self._settings.max_upload_bytes:
-            raise UploadTooLargeError(self._settings.max_upload_bytes)
-
-    def _validate_language(self, language: str | None) -> None:
-        if language is not None and language not in self._transcriber.supported_languages:
-            raise InvalidLanguageError(language)
 
     def _validate_duration(self, duration_seconds: float | None) -> None:
         if (
@@ -251,6 +143,3 @@ class TranscriptionService:
             and duration_seconds > self._settings.max_media_duration_seconds
         ):
             raise MediaTooLongError(self._settings.max_media_duration_seconds)
-
-
-TranscriberFactory = Callable[[Settings], Transcriber]

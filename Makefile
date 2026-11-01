@@ -3,7 +3,7 @@ SAMPLES ?=
 AUDIO_MODE ?= speech
 MODEL_PROFILE ?= faster
 
-.PHONY: setup run check test smoke docker-build docker-up docker-smoke docker-down
+.PHONY: setup run check test package smoke docker-build docker-up docker-smoke docker-down
 
 setup:
 	$(UV) sync --frozen --all-groups
@@ -19,6 +19,9 @@ check:
 
 test:
 	$(UV) run --frozen pytest --cov=transcription_service --cov-report=term-missing
+
+package:
+	$(UV) build --wheel
 
 smoke:
 	@test -n "$(SAMPLES)" || (echo 'Set SAMPLES, e.g. SAMPLES="he=/path/to/sample.wav"' >&2; exit 2)

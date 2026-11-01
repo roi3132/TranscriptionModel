@@ -5,6 +5,7 @@ from typing import NoReturn
 
 from fastapi.testclient import TestClient
 
+from tests.conftest import FakeTranscriber
 from transcription_service.core.config import Settings
 from transcription_service.main import create_app
 
@@ -65,3 +66,24 @@ def test_http_errors_use_stable_envelope(client: TestClient) -> None:
             "request_id": "missing-route",
         }
     }
+
+
+def test_method_not_allowed_preserves_allow_header(client: TestClient) -> None:
+    response = client.get("/v1/transcriptions")
+    assert response.status_code == 405
+    assert response.headers["allow"] == "POST"
+
+
+def test_unexpected_errors_keep_request_id_without_leaking_details(settings: Settings) -> None:
+    app = create_app(settings, transcriber_factory=lambda _: FakeTranscriber())
+
+    @app.get("/explode")
+    async def explode() -> None:
+        raise RuntimeError("private internal failure")
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.get("/explode", headers={"X-Request-ID": "unexpected-failure"})
+    assert response.status_code == 500
+    assert response.headers["X-Request-ID"] == "unexpected-failure"
+    assert response.json()["error"]["request_id"] == "unexpected-failure"
+    assert "private" not in response.text

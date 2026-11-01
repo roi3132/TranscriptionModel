@@ -20,6 +20,16 @@ const copyFeedback = document.querySelector("#copy-feedback");
 let latestTranscript = "";
 let selectedFilename = "transcript";
 let isTranscribing = false;
+let clientConfig;
+
+async function getClientConfig() {
+  if (!clientConfig) {
+    const response = await fetch("/client-config");
+    if (!response.ok) throw new Error("Could not load service configuration");
+    clientConfig = await response.json();
+  }
+  return clientConfig;
+}
 
 function formatBytes(bytes) {
   if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
@@ -114,6 +124,7 @@ function friendlyError(payload, status) {
   const messages = {
     model_not_ready: "The transcription model is still starting. Wait a moment and try again.",
     model_busy: "The model is busy with another recording. Please try again shortly.",
+    upload_busy: "The service is processing other uploads. Please try again shortly.",
     unsupported_media: "That file could not be read. Try a supported audio or video format.",
     no_audio_stream: "This video does not contain an audio track.",
     media_too_long: "This recording is longer than the current service limit.",
@@ -179,7 +190,15 @@ form.addEventListener("submit", async (event) => {
   selectedFilename = file.name.replace(/\.[^.]+$/, "") || "transcript";
 
   try {
-    const response = await fetch("/v1/transcriptions", { method: "POST", body: formData });
+    const config = await getClientConfig();
+    if (file.size > config.max_upload_bytes) {
+      loadingState.hidden = true;
+      showFormError(`Choose a file smaller than ${formatBytes(config.max_upload_bytes)}.`);
+      resultTitle.textContent = "Choose a smaller file";
+      resultBadge.textContent = "FILE TOO LARGE";
+      return;
+    }
+    const response = await fetch(config.transcription_url, { method: "POST", body: formData });
     const payload = await response.json();
     loadingState.hidden = true;
 

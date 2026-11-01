@@ -12,12 +12,12 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from transcription_service.core.config import Settings
-from transcription_service.main import create_app
-from transcription_service.services.transcription import (
+from transcription_service.domain import (
     AudioMode,
     SegmentResult,
     TranscriptionResult,
 )
+from transcription_service.main import create_app
 
 
 class FakeTranscriber:

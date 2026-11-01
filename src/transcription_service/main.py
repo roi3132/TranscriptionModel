@@ -23,11 +23,8 @@ from transcription_service.core.config import Settings, get_settings
 from transcription_service.core.errors import register_exception_handlers
 from transcription_service.core.logging import configure_logging
 from transcription_service.core.status import RuntimeStatus
-from transcription_service.services.transcription import (
-    MediaInspector,
-    TranscriberFactory,
-    TranscriptionService,
-)
+from transcription_service.domain import MediaInspector, TranscriberFactory
+from transcription_service.services.transcription import TranscriptionService
 
 logger = structlog.get_logger(__name__)
 REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
@@ -54,7 +51,9 @@ def create_app(
     resolved_settings = settings or get_settings()
     configure_logging(resolved_settings.log_level)
     runtime_status = RuntimeStatus()
-    resolved_media_inspector = media_inspector or PyAvMediaInspector()
+    resolved_media_inspector = media_inspector or PyAvMediaInspector(
+        max_duration_seconds=resolved_settings.max_media_duration_seconds
+    )
 
     @asynccontextmanager
     async def lifespan(lifespan_app: FastAPI) -> AsyncIterator[None]:
@@ -98,6 +97,7 @@ def create_app(
     application.state.settings = resolved_settings
     application.state.runtime_status = runtime_status
     application.state.transcription_service = None
+    application.state.upload_slots = anyio.CapacityLimiter(resolved_settings.max_concurrent_uploads)
 
     register_exception_handlers(application)
     application.include_router(health_router)
@@ -128,6 +128,15 @@ def create_app(
                 duration_ms=round((perf_counter() - started_at) * 1000, 2),
             )
             return response
+        except Exception:
+            await logger.aerror(
+                "request_failed",
+                method=request.method,
+                path=request.url.path,
+                status_code=500,
+                duration_ms=round((perf_counter() - started_at) * 1000, 2),
+            )
+            raise
         finally:
             structlog.contextvars.clear_contextvars()
 

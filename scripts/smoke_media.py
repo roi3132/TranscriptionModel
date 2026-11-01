@@ -7,8 +7,8 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from transcription_service.domain import AudioMode, ModelProfile
 from transcription_service.main import create_app
-from transcription_service.services.transcription import AudioMode, ModelProfile
 
 
 def _sample(value: str) -> tuple[str, Path]:

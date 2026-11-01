@@ -6,10 +6,11 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any, ClassVar, cast
 
+import pytest
 from faster_whisper import WhisperModel
 
 from transcription_service.adapters.faster_whisper import FasterWhisperTranscriber
-from transcription_service.services.transcription import AudioMode
+from transcription_service.domain import AudioMode
 
 
 @dataclass
@@ -91,3 +92,24 @@ def test_music_mode_disables_voice_activity_detection() -> None:
 
     assert model.received_vad_filter is False
     assert model.received_no_speech_threshold is None
+
+
+def test_segments_stay_within_the_recording(monkeypatch: pytest.MonkeyPatch) -> None:
+    model = FakeWhisperModel()
+
+    def transcribe(media: Any, **options: Any) -> tuple[list[FakeSegment], Any]:
+        return (
+            [
+                FakeSegment(-1, 1.2, "first"),
+                FakeSegment(1.2, 30, "last"),
+                FakeSegment(31, 32, "outside"),
+                FakeSegment(1.5, 1.5, "zero length"),
+            ],
+            SimpleNamespace(language="en", language_probability=1, duration=2.0),
+        )
+
+    monkeypatch.setattr(model, "transcribe", transcribe)
+    adapter = FasterWhisperTranscriber(cast(WhisperModel, model), model_id="test", beam_size=5)
+    result = adapter.transcribe(io.BytesIO(b"audio"), language="en", audio_mode=AudioMode.MUSIC)
+    assert result.text == "first last"
+    assert [(segment.start, segment.end) for segment in result.segments] == [(0, 1.2), (1.2, 2)]

@@ -1,6 +1,6 @@
 """Application errors and their HTTP representation."""
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from http import HTTPStatus
 
 import structlog
@@ -118,6 +118,17 @@ class ModelInferenceError(ApplicationError):
     default_message = "The transcription could not be completed."
 
 
+class UploadBusyError(ApplicationError):
+    """Reject uploads before parsing when all admission slots are occupied."""
+
+    code = "upload_busy"
+    status_code = HTTPStatus.SERVICE_UNAVAILABLE
+    default_message = "The service is busy processing uploads. Try again shortly."
+
+    def __init__(self) -> None:
+        super().__init__(headers={"Retry-After": "1"})
+
+
 def _request_id(request: Request) -> str:
     return getattr(request.state, "request_id", "unknown")
 
@@ -128,7 +139,7 @@ def _error_response(
     status_code: int,
     code: str,
     message: str,
-    headers: dict[str, str] | None = None,
+    headers: Mapping[str, str] | None = None,
 ) -> JSONResponse:
     payload = ErrorResponse(
         error=ErrorDetail(code=code, message=message, request_id=_request_id(request))
@@ -136,7 +147,7 @@ def _error_response(
     return JSONResponse(
         status_code=status_code,
         content=payload.model_dump(mode="json"),
-        headers=headers,
+        headers={**(headers or {}), "X-Request-ID": _request_id(request)},
     )
 
 
@@ -172,17 +183,25 @@ async def _handle_http_error(request: Request, exc: Exception) -> Response:
     if not isinstance(exc, StarletteHTTPException):
         raise TypeError("HTTP error handler received an unexpected exception")
 
-    message = exc.detail if isinstance(exc.detail, str) else HTTPStatus(exc.status_code).phrase
+    message = (
+        exc.detail if isinstance(exc.detail, str) else "The HTTP request could not be completed."
+    )
     return _error_response(
         request,
         status_code=exc.status_code,
         code="http_error",
         message=message,
+        headers=exc.headers,
     )
 
 
 async def _handle_unexpected_error(request: Request, exc: Exception) -> Response:
-    await logger.aexception("unexpected_request_error", exception_type=type(exc).__name__)
+    await logger.aexception(
+        "unexpected_request_error",
+        exception_type=type(exc).__name__,
+        request_id=_request_id(request),
+        exc_info=(type(exc), exc, exc.__traceback__),
+    )
     return _error_response(
         request,
         status_code=HTTPStatus.INTERNAL_SERVER_ERROR,

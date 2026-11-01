@@ -9,14 +9,14 @@ import pytest
 
 from transcription_service.core.config import Settings
 from transcription_service.core.errors import ModelBusyError
-from transcription_service.services.transcription import (
+from transcription_service.domain import (
     AudioMode,
     MediaMetadata,
     ModelProfile,
     SegmentResult,
     TranscriptionResult,
-    TranscriptionService,
 )
+from transcription_service.services.transcription import TranscriptionService
 
 
 class StaticMediaInspector:
@@ -145,5 +145,51 @@ def test_concurrent_large_requests_initialize_model_once() -> None:
             finish_loading.set()
         assert await asyncio.gather(*tasks) == ["done", "done"]
         assert load_count == 1
+
+    asyncio.run(scenario())
+
+
+def test_cancellation_keeps_upload_and_capacity_until_worker_finishes() -> None:
+    async def scenario() -> None:
+        settings = Settings(_env_file=None, inference_queue_timeout_seconds=0.01)
+        transcriber = BlockingTranscriber()
+        media = io.BytesIO(b"audio")
+        service = TranscriptionService(transcriber, StaticMediaInspector(), settings)
+
+        async def request() -> None:
+            try:
+                await service.transcribe(
+                    media,
+                    size_bytes=5,
+                    filename="sample.wav",
+                    content_type="audio/wav",
+                    language="en",
+                    audio_mode=AudioMode.SPEECH,
+                )
+            finally:
+                media.close()
+
+        task = asyncio.create_task(request())
+        assert await asyncio.to_thread(transcriber.started.wait, 1)
+        task.cancel()
+        try:
+            with pytest.raises(ModelBusyError):
+                await service.transcribe(
+                    io.BytesIO(b"other"),
+                    size_bytes=5,
+                    filename="other.wav",
+                    content_type="audio/wav",
+                    language="en",
+                    audio_mode=AudioMode.SPEECH,
+                )
+            task.cancel()  # Repeated cancellation must not cancel the shielded worker either.
+            await asyncio.sleep(0)
+            assert not task.done()
+            assert not media.closed
+        finally:
+            transcriber.release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        assert media.closed
 
     asyncio.run(scenario())

@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     application_name: str = "Transcription Service"
     environment: Literal["development", "test", "production"] = "development"
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
-    api_prefix: str = "/v1"
+    api_prefix: str = Field(default="/v1", pattern=r"^(?:/[A-Za-z0-9_-]+)*$")
 
     model_id: str = "Systran/faster-whisper-small"
     model_revision: str = "536b0662742c02347bc0e980a01041f333bce120"
@@ -38,6 +38,7 @@ class Settings(BaseSettings):
     beam_size: int = Field(default=5, gt=0)
 
     max_upload_bytes: int = Field(default=100 * 1024 * 1024, gt=0)
+    max_concurrent_uploads: int = Field(default=2, gt=0)
     max_media_duration_seconds: float = Field(default=15 * 60, gt=0)
     max_concurrent_transcriptions: int = Field(default=1, gt=0)
     inference_queue_timeout_seconds: float = Field(default=5, gt=0)

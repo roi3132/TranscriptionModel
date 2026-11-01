@@ -9,8 +9,8 @@ from starlette.datastructures import UploadFile
 
 from tests.conftest import FakeTranscriber
 from transcription_service.core.config import Settings
+from transcription_service.domain import AudioMode, TranscriptionResult
 from transcription_service.main import create_app
-from transcription_service.services.transcription import AudioMode, TranscriptionResult
 
 
 def test_transcribes_hebrew_audio(

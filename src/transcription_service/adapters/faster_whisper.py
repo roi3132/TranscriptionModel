@@ -5,7 +5,7 @@ from typing import BinaryIO, Self
 from faster_whisper import WhisperModel
 
 from transcription_service.core.config import Settings
-from transcription_service.services.transcription import (
+from transcription_service.domain import (
     AudioMode,
     SegmentResult,
     TranscriptionResult,
@@ -70,11 +70,14 @@ class FasterWhisperTranscriber:
             vad_filter=audio_mode is AudioMode.SPEECH,
             **music_options,
         )
-        segment_results = tuple(
-            SegmentResult(start=segment.start, end=segment.end, text=segment.text.strip())
-            for segment in segments
-            if segment.text.strip()
-        )
+        valid_segments: list[SegmentResult] = []
+        for segment in segments:
+            text = segment.text.strip()
+            start = max(0.0, segment.start)
+            end = min(info.duration, segment.end)
+            if text and start < end:
+                valid_segments.append(SegmentResult(start=start, end=end, text=text))
+        segment_results = tuple(valid_segments)
         text = " ".join(segment.text for segment in segment_results).strip()
 
         return TranscriptionResult(

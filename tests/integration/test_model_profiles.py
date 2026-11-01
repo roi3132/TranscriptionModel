@@ -4,8 +4,8 @@ from fastapi.testclient import TestClient
 
 from tests.conftest import FakeTranscriber, make_wav_bytes
 from transcription_service.core.config import Settings
+from transcription_service.domain import AudioMode
 from transcription_service.main import create_app
-from transcription_service.services.transcription import AudioMode
 
 
 class LargerTranscriber(FakeTranscriber):
@@ -88,3 +88,23 @@ def test_failed_large_model_load_can_retry_and_does_not_break_faster(settings: S
             assert "private model download error" not in response.text
             assert client.get("/health/ready").status_code == 200
         assert attempts == 2
+
+
+def test_language_is_validated_against_the_selected_model(settings: Settings) -> None:
+    class FrenchModel(LargerTranscriber):
+        supported_languages = frozenset({"fr"})
+
+    large = FrenchModel()
+
+    def factory(model_settings: Settings) -> FakeTranscriber:
+        return large if model_settings.model_id == settings.larger_model_id else FakeTranscriber()
+
+    with TestClient(create_app(settings, transcriber_factory=factory)) as client:
+        for language, expected_status in (("fr", 200), ("en", 422)):
+            response = client.post(
+                "/v1/transcriptions",
+                files={"file": ("sample.wav", make_wav_bytes(), "audio/wav")},
+                data={"model_profile": "larger", "language": language},
+            )
+            assert response.status_code == expected_status
+        assert large.requested_languages == ["fr"]

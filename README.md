@@ -30,30 +30,30 @@ upload interface and Docker Compose packaging. See
 Browser / curl
       │ multipart/form-data
       ▼
-FastAPI route and API schemas
+BoundedUploadRoute
+  ├── request-body byte limit
+  ├── multipart shape and cleanup
+  └── upload admission limit
       │
       ▼
 TranscriptionService
-  ├── size and duration limits
-  ├── language validation
-  ├── concurrency semaphore
-  └── worker-thread execution
+  └── one bounded worker pipeline
       │
-      ├── PyAV media inspector
-      └── Transcriber interface
-                │
-                ▼
-       faster-whisper / CTranslate2
-                │
-                ▼
-   Systran/faster-whisper-small
+      ├── PyAV: decode/count audio within duration limit
+      ├── ModelRegistry: resolve small or lazy large-v3
+      ├── validate language against selected model
+      └── Transcriber: faster-whisper / CTranslate2
 ```
 
-The default model is loaded once during the FastAPI lifespan. Until loading succeeds,
-`/health/ready` returns `503`; `/health/live` remains independent of model state. Blocking media
-inspection and inference run in worker threads rather than on the asynchronous HTTP event loop.
+The default model loads once during startup, before Uvicorn begins serving HTTP. If initialization
+fails, the app still starts: `/health/ready` returns `503` and `/health/live` returns `200`.
+Blocking media validation and inference run in a worker thread rather than on the HTTP event loop.
 The optional larger model loads on its first request, inside the same inference concurrency limit,
 and is reused afterward. Readiness describes the default model; it does not pre-download large-v3.
+
+Shared data and adapter protocols live in `domain.py`; model caching lives in `services/models.py`;
+the use case lives in `services/transcription.py`. The review findings and remaining boundaries are
+recorded in [`docs/code-review.md`](docs/code-review.md).
 
 ## Run locally
 
@@ -154,7 +154,7 @@ Example response:
   "segments": [
     {
       "start": 0.0,
-      "end": 2.44,
+      "end": 2.39,
       "text": "שלום, זאת בדיקה של שירות התמלול"
     }
   ]
@@ -173,6 +173,9 @@ uv run --frozen ruff check .
 uv run --frozen mypy src
 uv run --frozen pytest --cov=transcription_service --cov-report=term-missing
 ```
+
+Run `make package` to build the distribution wheel. CI builds it as a separate check: editable
+development installs alone do not validate the files that Docker's non-editable install needs.
 
 Run an explicit real-model smoke test against one or more local samples:
 
@@ -208,8 +211,9 @@ All settings use the `TRANSCRIPTION_` environment prefix. Defaults are listed in
 | `TRANSCRIPTION_COMPUTE_TYPE` | `int8` | CPU-friendly quantized inference |
 | `TRANSCRIPTION_BEAM_SIZE` | `5` | Beam-search quality/speed trade-off |
 | `TRANSCRIPTION_MAX_UPLOAD_BYTES` | `104857600` | 100 MiB file-size limit |
+| `TRANSCRIPTION_MAX_CONCURRENT_UPLOADS` | `2` | Admitted upload requests, including parsing, queueing, and processing |
 | `TRANSCRIPTION_MAX_MEDIA_DURATION_SECONDS` | `900` | 15-minute synchronous limit |
-| `TRANSCRIPTION_MAX_CONCURRENT_TRANSCRIPTIONS` | `1` | Model inference slots per process |
+| `TRANSCRIPTION_MAX_CONCURRENT_TRANSCRIPTIONS` | `1` | Shared decoding, model loading, and inference slots per process |
 | `TRANSCRIPTION_INFERENCE_QUEUE_TIMEOUT_SECONDS` | `5` | Wait before returning `model_busy` |
 
 ## Dependency compatibility note
@@ -318,6 +322,14 @@ The first product returns the transcription in the upload response because that 
 the assignment. File size, media duration, model concurrency, and queue wait are bounded to prevent
 uncontrolled resource consumption.
 
+Transport limits apply before dependencies or inference: at most two upload requests are admitted
+per process by default; more receive `503 upload_busy` with `Retry-After`. Each body is limited to
+the file limit plus 64 KiB of multipart overhead, including when Content-Length is absent or wrong.
+Starlette parses at most one file and three form fields of up to 4 KiB each. The exact file-size
+limit is also checked after parsing. Parser errors and early rejections close partial uploads.
+If increasing file size or admission concurrency, also increase Compose's 256 MiB temporary
+filesystem appropriately. These limits are per process, not shared across replicas.
+
 For longer recordings or production traffic, the API should evolve to:
 
 ```text
@@ -333,10 +345,12 @@ background task was rejected because a process restart would lose accepted work.
 
 ### One inference at a time by default
 
-The default concurrency is one to keep CPU and model memory use predictable. Additional HTTP
+The default pipeline concurrency is one to keep CPU and model memory use predictable. Admitted
 requests wait up to the configured queue timeout and then receive `503 model_busy` plus
-`Retry-After`. Blocking inference runs in a worker thread so health requests and other asynchronous
-HTTP work remain responsive.
+`Retry-After`. Media decoding, lazy loading, and inference all occupy that slot and run in a worker
+thread. A cancelled caller retains its stream and slot until the native worker finishes, because a
+Python task cancellation cannot safely stop a native decoder or inference thread. Processing time
+includes validation, loading, and inference; it excludes upload and queue wait.
 
 Run one Uvicorn worker by default. Multiple workers each load a separate model and multiply memory
 usage. A future GPU deployment should normally run one worker process per assigned GPU and scale
@@ -354,6 +368,14 @@ WebM, and MKV, PyAV selects the first audio stream; the video frames are not dec
 a separate temporary file. A readable video without audio returns the typed `no_audio_stream`
 client error. Selecting among multiple audio tracks is deferred until a product requirement defines
 the desired user experience and API contract.
+
+Duration headers are an early check, not a resource guarantee. PyAV also decodes the first audio
+stream incrementally and counts samples, stopping at the configured limit even when duration
+metadata is missing or under-reported. Faster-whisper decodes that validated input again for its
+own preprocessing. This extra decode is an intentional CPU trade-off that bounds input before the
+model allocates its full audio array, without duplicating faster-whisper's preprocessing logic.
+Segment timestamps are clipped to the decoded recording duration and empty/out-of-range spans are
+discarded. This fixes impossible timelines; it does not correct hallucinated words.
 
 ### Speech and music modes instead of a VAD flag
 
@@ -398,7 +420,7 @@ Expected status codes include:
 | `415` | Unsupported or undecodable media |
 | `422` | Invalid language/audio mode or missing audio stream |
 | `500` | Sanitized model/inference failure |
-| `503` | Model unavailable or inference queue timeout |
+| `503` | Model unavailable, upload admission full, or inference queue timeout |
 
 Internal exception text, stack traces, and local paths are logged server-side and are not returned
 to clients. Every response includes `X-Request-ID` for correlation.
@@ -410,6 +432,8 @@ submits to the existing API, so local development and deployment need only one p
 no separate frontend server, framework, bundler, or extra runtime dependency. Static assets are
 packaged with the Python wheel. The page does not load fonts, scripts, or styles from third-party
 CDNs, and the service still discards uploaded media and results after responding.
+The page obtains the transcription URL and upload limit from `/client-config`, so a configured API
+prefix works without changing JavaScript. Server-side validation remains authoritative.
 
 This intentionally small interface is appropriate for the assignment's one-request workflow. A
 larger product with navigation, authentication, durable job history, or multiple frontend teams
@@ -441,6 +465,10 @@ GitHub Actions runs the same locked Ruff, mypy, and fake-transcriber pytest chec
 development. It does not download model weights or handle secrets. Third-party workflow actions are
 pinned to commit SHAs to make the CI toolchain changes explicit and reviewable.
 
+Wheel packaging relies on Hatch's normal package discovery for static files. The review caught a
+duplicate `force-include` rule that broke wheel builds despite passing editable-install tests; that
+rule was removed and CI now also runs `make package`.
+
 ## Current limitations and next steps
 
 - Only the first audio stream in a video container is transcribed; the API does not yet expose audio
@@ -452,6 +480,9 @@ pinned to commit SHAs to make the CI toolchain changes explicit and reviewable.
 - Music mode processes the full audio track and is therefore slower than speech mode.
 - Docker uses CPU inference and a single worker. A production GPU or multi-replica deployment needs
   deployment-specific resource allocation, scaling, and model-cache warming.
+- Native decoding/inference has no hard execution deadline and runs in the API process. Duration
+  and admission limits bound normal work, but hostile inputs and hard cancellation require worker
+  process isolation; public deployment also needs ingress timeouts and request-rate limits.
 
 ## Updating this decision record
 

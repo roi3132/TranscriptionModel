@@ -32,3 +32,9 @@ def test_settings_read_prefixed_environment_variables(monkeypatch: pytest.Monkey
 def test_settings_reject_non_positive_limits() -> None:
     with pytest.raises(ValidationError):
         Settings(_env_file=None, max_upload_bytes=0)
+
+
+@pytest.mark.parametrize("prefix", ["v1", "/v1/", "/v1?query=1"])
+def test_rejects_api_prefixes_that_cannot_be_mounted(prefix: str) -> None:
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, api_prefix=prefix)

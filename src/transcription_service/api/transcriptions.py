@@ -8,19 +8,19 @@ from typing import Annotated, BinaryIO
 import anyio
 from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 
+from transcription_service.api.uploads import BoundedUploadRoute
 from transcription_service.core.errors import InvalidLanguageError, ModelNotReadyError
+from transcription_service.domain import AudioMode, ModelProfile
 from transcription_service.schemas.common import ErrorResponse
 from transcription_service.schemas.transcription import (
     TranscriptionResponse,
     TranscriptionSegment,
 )
-from transcription_service.services.transcription import (
-    AudioMode,
-    ModelProfile,
-    TranscriptionService,
-)
+from transcription_service.services.transcription import TranscriptionService
 
-router = APIRouter(prefix="/transcriptions", tags=["transcriptions"])
+router = APIRouter(
+    prefix="/transcriptions", tags=["transcriptions"], route_class=BoundedUploadRoute
+)
 LANGUAGE_CODE_PATTERN = re.compile(r"^[a-z]{2,3}$")
 
 
@@ -86,31 +86,29 @@ async def create_transcription(
 ) -> TranscriptionResponse:
     """Return a completed, timestamped transcription for one media upload."""
 
-    try:
-        size_bytes = file.size
-        if size_bytes is None:
-            size_bytes = await anyio.to_thread.run_sync(partial(_stream_size, file.file))
+    # BoundedUploadRoute and FastAPI own the multipart form's complete lifetime.
+    size_bytes = file.size
+    if size_bytes is None:
+        size_bytes = await anyio.to_thread.run_sync(partial(_stream_size, file.file))
 
-        completed = await service.transcribe(
-            file.file,
-            size_bytes=size_bytes,
-            filename=file.filename,
-            content_type=file.content_type,
-            language=_normalized_language(language),
-            audio_mode=audio_mode,
-            model_profile=model_profile,
-        )
-        return TranscriptionResponse(
-            text=completed.result.text,
-            language=completed.result.language,
-            language_probability=completed.result.language_probability,
-            duration_seconds=completed.result.duration_seconds,
-            processing_time_seconds=completed.processing_time_seconds,
-            model=completed.model_id,
-            segments=[
-                TranscriptionSegment(start=item.start, end=item.end, text=item.text)
-                for item in completed.result.segments
-            ],
-        )
-    finally:
-        await file.close()
+    completed = await service.transcribe(
+        file.file,
+        size_bytes=size_bytes,
+        filename=file.filename,
+        content_type=file.content_type,
+        language=_normalized_language(language),
+        audio_mode=audio_mode,
+        model_profile=model_profile,
+    )
+    return TranscriptionResponse(
+        text=completed.result.text,
+        language=completed.result.language,
+        language_probability=completed.result.language_probability,
+        duration_seconds=completed.result.duration_seconds,
+        processing_time_seconds=completed.processing_time_seconds,
+        model=completed.model_id,
+        segments=[
+            TranscriptionSegment(start=item.start, end=item.end, text=item.text)
+            for item in completed.result.segments
+        ],
+    )
