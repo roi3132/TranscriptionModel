@@ -198,6 +198,17 @@ The smoke test loads the configured Hugging Face model, waits for readiness, and
 through the public HTTP endpoint. It is deliberately excluded from normal CI because it downloads
 large weights and its execution time depends on the available hardware.
 
+Phase 5 verification on 1 November 2026 passed Ruff, mypy, all 63 fast tests with 95% coverage,
+wheel packaging, and real-model smoke tests for generated English, Hebrew, mixed-language, and
+MP4-with-audio samples. Corrupt allowed media returned the sanitized `415 unsupported_media`
+contract. The documented `make smoke` command was also exercised successfully. Docker Desktop on
+Apple Silicon built the ARM64 image from scratch and ran the Compose-configured service. Its first
+startup populated a 464 MB named model-cache volume and completed real inference; a restart using
+the same volume initialized the model in under one second without downloading the weights again.
+Readiness, the browser UI, OpenAPI, non-root execution, read-only root filesystem, bounded tmpfs,
+dropped capabilities, and `no-new-privileges` were verified. Port `8002` was used for this check
+because the project's native development server was already using the documented port `8000`.
+
 ## Configuration
 
 All settings use the `TRANSCRIPTION_` environment prefix. Defaults are listed in `.env.example`.

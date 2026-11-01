@@ -545,7 +545,7 @@
                 <label class="task"><input type="checkbox" data-task="4-5" checked><span>Document the asynchronous production evolution and why the take-home version intentionally has no database.</span></label>
               </div>
               <div class="callout"><strong>Exit check:</strong> A clean clone succeeds using only the README and <code>docker compose up --build</code>.</div>
-              <div class="note">Review update: duplicate wheel asset inclusion was removed and CI now builds the wheel. Multipart bytes and admission are bounded before parsing; decoding and inference share capacity. See <code>docs/code-review.md</code> for findings and remaining boundaries. Docker runtime acceptance still needs verification on a machine with Docker installed.</div>
+              <div class="note">Review update: duplicate wheel asset inclusion was removed and CI now builds the wheel. Multipart bytes and admission are bounded before parsing; decoding and inference share capacity. See <code>docs/code-review.md</code> for findings and remaining boundaries. Docker runtime acceptance was completed on Apple Silicon on 1 November 2026.</div>
             </div>
           </article>
 
@@ -555,12 +555,13 @@
               <h3>Final verification and submission</h3>
               <div class="phase-meta">Estimated 4 hours · Includes contingency buffer</div>
               <div class="tasks">
-                <label class="task"><input type="checkbox" data-task="5-1"><span>Run all fast checks and inspect test coverage for validation, errors, lifecycle, and cleanup—not just happy paths.</span></label>
-                <label class="task"><input type="checkbox" data-task="5-2"><span>Build the container from scratch and verify the first model download and cached second startup.</span></label>
-                <label class="task"><input type="checkbox" data-task="5-3"><span>Smoke-test English audio, Hebrew audio, mixed Hebrew/English audio, video with audio, and invalid media.</span></label>
-                <label class="task"><input type="checkbox" data-task="5-4"><span>Review logs for secrets, local paths, stack traces in responses, and accidental retention of media or transcripts.</span></label>
-                <label class="task"><input type="checkbox" data-task="5-5"><span>Proofread the README from a reviewer perspective and confirm every command is copy-pasteable.</span></label>
+                <label class="task"><input type="checkbox" data-task="5-1" checked><span>Run all fast checks and inspect test coverage for validation, errors, lifecycle, and cleanup—not just happy paths.</span></label>
+                <label class="task"><input type="checkbox" data-task="5-2" checked><span>Build the container from scratch and verify the first model download and cached second startup.</span></label>
+                <label class="task"><input type="checkbox" data-task="5-3" checked><span>Smoke-test English audio, Hebrew audio, mixed Hebrew/English audio, video with audio, and invalid media.</span></label>
+                <label class="task"><input type="checkbox" data-task="5-4" checked><span>Review logs for secrets, local paths, stack traces in responses, and accidental retention of media or transcripts.</span></label>
+                <label class="task"><input type="checkbox" data-task="5-5" checked><span>Proofread the README from a reviewer perspective and confirm every command is copy-pasteable.</span></label>
               </div>
+              <div class="note"><strong>Verification update · 1 November 2026:</strong> Ruff, mypy, 63 tests with 95% coverage, and wheel packaging pass. The real small model successfully transcribed generated English, Hebrew, mixed-language, MP4-with-audio, and containerized English fixtures; corrupt allowed media returned the sanitized <code>415 unsupported_media</code> contract. A tracked-file and logging audit found no committed media or secret values, and request logs did not include filenames or transcript text. Docker Desktop built the ARM64 image from scratch. The first container startup populated a 464 MB named model-cache volume; the cached restart initialized the model in under one second. Readiness, UI, OpenAPI, non-root execution, read-only root filesystem, bounded tmpfs, dropped capabilities, and <code>no-new-privileges</code> were verified. Port 8002 was used because the native development server already occupied port 8000. All Phase 5 tasks are complete.</div>
             </div>
           </article>
 
@@ -672,8 +673,8 @@ curl --fail -F "file=@sample.mp3" -F "language=he" \
 cp .env.example .env
 make run          # local API with reload
 make check        # Ruff + mypy + fast pytest suite
-make test-model MEDIA_FILE=/absolute/path/to/sample.mp3
-make smoke        # health + end-to-end request against running service</code></pre>
+make smoke SAMPLES="en=/absolute/path/to/sample.mp3"
+                  # health + real-model request through the in-process API</code></pre>
           <div class="callout warning"><strong>Do not hide setup costs:</strong> The README must call out the first model download, expected CPU behavior, supported formats, synchronous limits, and the fact that one worker is deliberate.</div>
         </section>
 

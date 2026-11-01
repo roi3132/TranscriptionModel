@@ -65,11 +65,27 @@ multi-host scaling remain later deployment options.
   duplicating its resampling/feature-extraction implementation.
 - No authentication, durable jobs/history, reverse-proxy deployment, or accuracy guarantee for
   singing was added. Public ingress needs authentication, rate limits, and upload/idle timeouts.
-- The Docker CLI is unavailable in this environment. Wheel packaging and native tests are checked;
-  the container startup/cache-reuse acceptance check still requires Docker.
+- Docker Desktop on Apple Silicon built and ran the ARM64 image successfully. The Compose-configured
+  container completed real inference and the named model volume survived container replacement.
 
 ## Verification
 
 Run `make check test package` for formatting, lint, typing, fast regression tests, and wheel build.
 Use the README's explicit real-model smoke commands for native inference, and `make docker-smoke`
 when Docker is available. Fast CI must continue to avoid downloading model weights.
+
+Phase 5 verification on 1 November 2026 produced the following evidence:
+
+- Ruff formatting/lint and strict mypy passed; all 63 tests passed with 95% coverage; the wheel built.
+- The cached real small model successfully transcribed generated English, Hebrew, mixed-language,
+  and MP4-with-audio samples through the public endpoint.
+- Corrupt content carrying an allowed `.mp3` name and MIME type returned the sanitized
+  `415 unsupported_media` envelope without exposing its local path.
+- No media files or obvious secret values are tracked. Request logs contain method, route, status,
+  timing, model identifiers, error codes, and request IDs—not filenames or transcript text.
+- The README's documented `make smoke SAMPLES=...` path completed successfully.
+- Docker Desktop built the image from scratch and populated a 464 MB named model-cache volume on the
+  first startup. The replacement container reached model readiness in under one second using the
+  same volume and completed real inference. Container inspection confirmed UID/GID 10001,
+  read-only root filesystem, a 256 MiB `noexec,nosuid` tmpfs, all capabilities dropped, and
+  `no-new-privileges`. Port 8002 was used because the native development server occupied port 8000.
